@@ -113,7 +113,7 @@ cd claude-local-rag
 /rag mode off
 ```
 
-> **Token 消耗**：开启后每次对话会额外消耗约 200～600 input token（用于注入检索到的背景知识）。关闭则无额外消耗。
+> **Token 消耗**：开启后每次对话会额外消耗用于注入检索到的背景知识的token。关闭则无额外消耗。
 >
 > 该模式仅在**当前对话**内有效，重新开启 Claude Code 后自动失效，需再次执行 `/rag mode on`。
 >
@@ -148,8 +148,8 @@ cd claude-local-rag
 | 命令 | 说明 | 额外 Token |
 |------|------|-----------|
 | `/rag <内容或链接>` | 存入文档 | 无 |
-| `/rag retrieve <问题>` | 主动检索 | 结果用于对话时约 200～600 |
-| `/rag mode on` | 开启自动检索 | 每次对话约 200～600 |
+| `/rag retrieve <问题>` | 主动检索 | 基于文本长度的近似 token 估算 |
+| `/rag mode on` | 开启自动检索 | 基于文本长度的近似 token 估算 |
 | `/rag mode off` | 关闭自动检索 | 无 |
 | `/rag status` | 查看状态 | 无 |
 | `/rag reset` | 清空知识库 | 无 |

@@ -1,0 +1,20 @@
+model:
+  name: "BAAI/bge-small-zh-v1.5"
+
+embedding:
+  doc_prefix: "段落："
+  query_prefix: "查询："
+
+chunk:
+  min_tokens: 200
+  max_tokens: 400
+
+retrieve:
+  top_k: 3
+
+storage:
+  index_path: "index.bin"
+  texts_path: "chunks.pkl"
+
+server:
+  port: 8765

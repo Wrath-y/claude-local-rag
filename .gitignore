@@ -1,0 +1,15 @@
+# 向量库数据（本地生成，不上传）
+index.bin
+chunks.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 日志
+*.log
+
+# macOS
+.DS_Store

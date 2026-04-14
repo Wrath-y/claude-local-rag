@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SETTINGS="$HOME/.claude/settings.json"
+COMMANDS_DIR="$HOME/.claude/commands"
+
+echo "[1/5] 检查依赖..."
+
+if ! command -v python3 &>/dev/null; then
+  echo "错误：未找到 python3，请先安装 Python 3.8+" && exit 1
+fi
+
+if ! command -v jq &>/dev/null; then
+  echo "错误：未找到 jq，请先安装：brew install jq" && exit 1
+fi
+
+if ! command -v node &>/dev/null; then
+  echo "  ⚠️  未检测到 Node.js（飞书 CLI 依赖，可选）：https://nodejs.org"
+fi
+
+if ! python3 -c "import uvicorn" &>/dev/null; then
+  echo "  安装 Python 依赖..."
+  pip install -r "$SCRIPT_DIR/requirements.txt" -q
+else
+  echo "  Python 依赖已就绪"
+fi
+
+echo "[2/5] 检查飞书 CLI..."
+if ! command -v lark-cli &>/dev/null; then
+  echo "  ⚠️  未检测到 lark-cli（/rag 飞书文档入库功能不可用）"
+  echo "  如需使用飞书文档入库，请参考以下文档完成安装："
+  echo "  👉 https://www.feishu.cn/content/article/7623291503305083853"
+else
+  echo "  lark-cli 已安装"
+fi
+
+echo "[3/5] 注册 /rag 斜杠命令..."
+
+mkdir -p "$COMMANDS_DIR"
+cp "$SCRIPT_DIR/.claude/commands/rag.md" "$COMMANDS_DIR/rag.md"
+echo "  已写入 $COMMANDS_DIR/rag.md"
+
+echo "[4/5] 配置 Claude Code 自动启动 Hook..."
+mkdir -p "$HOME/.claude"
+
+# 若配置文件不存在则创建空 JSON
+if [ ! -f "$SETTINGS" ]; then
+  echo "{}" > "$SETTINGS"
+fi
+
+HOOK_CMD="curl -s http://127.0.0.1:8765/health > /dev/null 2>&1 || (cd $SCRIPT_DIR && nohup uvicorn server:app --port 8765 >> /tmp/claude-local-rag.log 2>&1 &)"
+
+# 幂等写入：先删除已有的 claude-local-rag hook，再追加，避免重复
+UPDATED=$(jq \
+  --arg cmd "$HOOK_CMD" \
+  '
+  # 移除已有的 claude-local-rag hook（通过 command 内容匹配）
+  .hooks.SessionStart //= [] |
+  .hooks.SessionStart |= map(
+    .hooks |= map(select(.command | test("claude-local-rag") | not))
+  ) |
+  .hooks.SessionStart |= map(select(.hooks | length > 0)) |
+  # 追加新 hook
+  .hooks.SessionStart += [{
+    "hooks": [{
+      "type": "command",
+      "command": $cmd,
+      "statusMessage": "启动 RAG 服务...",
+      "async": true
+    }]
+  }]
+  ' "$SETTINGS")
+
+echo "$UPDATED" > "$SETTINGS"
+echo "  已写入 SessionStart hook → $SETTINGS"
+
+echo "[5/5] 启动 RAG 服务（首次）..."
+if curl -s http://127.0.0.1:8765/health > /dev/null 2>&1; then
+  echo "  服务已在运行，跳过启动"
+else
+  cd "$SCRIPT_DIR"
+  nohup uvicorn server:app --port 8765 >> /tmp/claude-local-rag.log 2>&1 &
+  SERVER_PID=$!
+
+  echo "  正在加载 embedding 模型，请稍候..."
+  MAX_WAIT=120
+  ELAPSED=0
+  while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if curl -s http://127.0.0.1:8765/health > /dev/null 2>&1; then
+      echo "  服务启动成功（${ELAPSED}s）→ http://127.0.0.1:8765"
+      break
+    fi
+    # 检查进程是否意外退出
+    if ! kill -0 $SERVER_PID 2>/dev/null; then
+      echo "  服务进程已退出，请查看日志：tail -f /tmp/claude-local-rag.log"
+      exit 1
+    fi
+    printf "  等待中... %ds\r" $ELAPSED
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+  done
+
+  if [ $ELAPSED -ge $MAX_WAIT ]; then
+    echo "  超时（${MAX_WAIT}s），请查看日志：tail -f /tmp/claude-local-rag.log"
+    exit 1
+  fi
+fi
+
+echo ""
+echo "安装完成！重启 Claude Code 后即可开箱即用。"
+echo "  /rag <内容或飞书链接>   — 存入向量库"
+echo "  日志：tail -f /tmp/claude-local-rag.log"

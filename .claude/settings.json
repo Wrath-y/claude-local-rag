@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json\ndata = json.load(sys.stdin)\nprompt = data.get('prompt', '')\nkeywords = ['存入向量库', '写入向量库', '加入向量库', '入库']\nif any(k in prompt for k in keywords):\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': '用户希望将内容存入 RAG 向量库。请调用 http://127.0.0.1:8765/ingest 接口完成入库，将相关文本作为 text 字段 POST 过去，并告知用户写入结果。'}}))\n\"",
+            "statusMessage": "检测入库意图..."
+          }
+        ]
+      }
+    ]
+  }
+}

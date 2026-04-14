@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"\nimport sys, json\ndata = json.load(sys.stdin)\nprompt = data.get('prompt', '')\nkeywords = ['存入向量库', '写入向量库', '加入向量库', '入库']\nif any(k in prompt for k in keywords):\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': '用户希望将内容存入 RAG 向量库。请调用 http://127.0.0.1:8765/ingest 接口完成入库，将相关文本作为 text 字段 POST 过去，并告知用户写入结果。'}}))\n\"",
-            "statusMessage": "检测入库意图..."
+            "command": "python3 -c \"\nimport sys,json,subprocess\n\ndata=json.load(sys.stdin)\nprompt=data.get('prompt','')\n\nimport requests\ntry:\n    r=requests.post('http://127.0.0.1:8765/retrieve',json={'text':prompt})\n    chunks=r.json().get('chunks',[])\n    context='\\n\\n'.join(chunks[:5])\n\n    print(json.dumps({\n        'hookSpecificOutput':{\n            'hookEventName':'UserPromptSubmit',\n            'additionalContext': f\"\\n[RAG CONTEXT]\\n{context}\\n\"\n        }\n    }))\nexcept Exception as e:\n    pass\n\"",
+            "statusMessage": "RAG 检索中..."
           }
         ]
       }

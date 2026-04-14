@@ -11,7 +11,7 @@
 | 限制 | 表现 | 本插件的解法 |
 |------|------|-------------|
 | 关闭对话即遗忘 | 下次开新对话，Claude 对上次讨论的文档一无所知 | 文档存入本地向量库，永久保留，随时可用 |
-| 大文档消耗大量 token | 把 100 页手册贴进对话，光读文档就花费大量费用 | 只检索与问题相关的片段（约 300 token），其余不传输 |
+| 大文档消耗大量 token | 把 100 页手册贴进对话，光读文档就花费大量费用 | 只检索与问题相关的片段，其余不传输 |
 | 无法跨文档语义搜索 | Claude 无法同时"记住"你的多份文档并按语义查找 | 所有存入的文档统一索引，按语义返回最相关内容 |
 
 **Claude Code 没有向量数据库**，自带的记忆系统基于文件笔记（CLAUDE.md），不具备语义检索能力。本插件补上了这个缺口。
@@ -25,7 +25,7 @@
 需要先安装以下工具（点击链接按说明操作）：
 
 - [Python 3.8+](https://www.python.org/downloads/)
-- [Node.js 16+](https://nodejs.org)（飞书 CLI 依赖）
+- [Node.js 16+](https://nodejs.org)（在使用 飞书 CLI 时依赖）
 - [jq](https://jqlang.github.io/jq/download/)（命令行 JSON 工具）：Mac 用户运行 `brew install jq`
 
 ---
@@ -77,7 +77,7 @@ cd claude-local-rag
 | 飞书文档链接 | `/rag https://xxx.feishu.cn/docx/xxx` |
 | 本地文件路径 | `/rag /Users/你的名字/文档/手册.txt` |
 
-> **Token 消耗**：文档内容的 Embedding 计算和存储在本地完成，不调用 Claude API，不产生额外 API 费用。
+> **Token 消耗**：文档内容的 Embedding 在本地完成，不调用 Claude API。但检索结果在用于对话时，会作为上下文传给 Claude，因此仍会消耗少量 input token。
 
 ---
 

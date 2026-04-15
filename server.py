@@ -139,6 +139,12 @@ async def lifespan(_app: FastAPI):
     load_store()
     print(f"[3/3] 服务就绪，监听 http://127.0.0.1:{config['server']['port']}")
     yield
+    global reranker
+    if reranker is not None:
+        del reranker
+        reranker = None
+    import gc
+    gc.collect()
 
 
 # ================= INIT =================
@@ -218,7 +224,7 @@ def retrieve(req: RetrieveRequest):
 
     if rerank_enabled and reranker is not None and top_candidates:
         pairs = [(req.text, c["text"]) for _, c in top_candidates]
-        rerank_scores = reranker.predict(pairs)
+        rerank_scores = reranker.predict(pairs, num_workers=0)
         top_candidates = [
             c for _, c in sorted(zip(rerank_scores, top_candidates), key=lambda x: x[0], reverse=True)
         ]

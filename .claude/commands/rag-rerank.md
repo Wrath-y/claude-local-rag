@@ -1,4 +1,4 @@
-开启或关闭 rerank 模式
+on/off 开启或关闭 rerank 模式. 首次开启会加载 cross-encoder 模型（~400MB，需等待约 10-60s）
 
 输入参数：$ARGUMENTS（on 或 off）
 

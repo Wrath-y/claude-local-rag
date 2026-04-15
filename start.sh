@@ -35,7 +35,7 @@ else
   echo "  lark-cli 已安装"
 fi
 
-echo "[3/5] 注册 /rag 斜杠命令..."
+echo "[3/5] 注册 /rag 命令..."
 
 mkdir -p "$COMMANDS_DIR"
 for f in "$SCRIPT_DIR/.claude/commands"/rag*.md; do

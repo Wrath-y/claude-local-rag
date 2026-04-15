@@ -73,27 +73,33 @@ def chunk_text(text: str) -> List[str]:
     sentences = [s.strip() for s in sentences if s.strip()]
 
     chunks = []
-    current = []
+    current: List[str] = []
     current_len = 0
 
+    def flush() -> None:
+        nonlocal current, current_len
+        chunks.append("".join(current))
+        overlap = current[-OVERLAP_SENTENCES:]
+        overlap_len = sum(len(s) for s in overlap)
+        # overlap 本身超过 CHUNK_MAX 时丢弃，避免下一句立即触发溢出导致重复输出
+        if overlap_len >= CHUNK_MAX:
+            current = []
+            current_len = 0
+        else:
+            current = overlap
+            current_len = overlap_len
+
     for sentence in sentences:
-        # 用字符数估算 token，对中英文均适用
         est_tokens = len(sentence)
 
         if current_len + est_tokens > CHUNK_MAX and current:
-            chunks.append("".join(current))
-            # 保留末尾 OVERLAP_SENTENCES 句作为下一个 chunk 的开头，保证语义连续性
-            current = current[-OVERLAP_SENTENCES:]
-            current_len = sum(len(s) for s in current)
+            flush()
 
         current.append(sentence)
         current_len += est_tokens
 
         if current_len >= CHUNK_MIN:
-            chunks.append("".join(current))
-            # 同上，输出 chunk 后滑动窗口
-            current = current[-OVERLAP_SENTENCES:]
-            current_len = sum(len(s) for s in current)
+            flush()
 
     if current:
         chunks.append("".join(current))

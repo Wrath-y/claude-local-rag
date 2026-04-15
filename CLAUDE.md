@@ -21,7 +21,7 @@ Local RAG Plugin（本地知识检索插件）
 ## 2. 核心架构
 
 ```
-Claude Code（/rag 命令 / 关键词触发 / mode on 自动检索）
+Claude Code（/rag 命令 / mode on 自动检索）
     ↓
 FastAPI 本地服务（port 8765）
     ↓
@@ -105,7 +105,7 @@ claude-local-rag/
  ├── index.bin              # FAISS 索引（运行后生成）
  ├── chunks.pkl             # 文本块存储（运行后生成）
  └── .claude/
-     ├── settings.json      # UserPromptSubmit Hook（关键词入库触发）
+     ├── settings.json      # UserPromptSubmit Hook（mode on 自动检索）
      └── commands/
          └── rag.md         # /rag 斜杠命令定义
 ```
@@ -130,9 +130,9 @@ claude-local-rag/
 | `/rag status` | 查看服务状态和 chunk 数 |
 | `/rag reset` | 清空向量库（二次确认） |
 
-### 关键词触发入库
+### 入库方式
 
-`.claude/settings.json` 中的 `UserPromptSubmit` Hook 检测关键词（`存入向量库` / `写入向量库` / `加入向量库` / `入库`），触发时注入 `additionalContext` 提示 Claude 调用 `/ingest`。
+所有入库操作通过 `/rag` 命令显式触发，不依赖关键词检测。
 
 ---
 

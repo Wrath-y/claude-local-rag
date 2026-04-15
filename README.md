@@ -212,7 +212,103 @@ cd claude-local-rag
 | `/rag-sources` | 列出所有来源及各来源 chunk 数 | 无 |
 | `/rag-source-delete <名称>` | 按来源删除 chunk | 无 |
 | `/rag-rerank on/off` | 开启/关闭 rerank 精排 | 无 |
+| `/rag-verbose on/off` | 开启/关闭检索可观测性日志 | 无 |
 | `/rag-reset` | 清空全部知识库 | 无 |
+
+---
+
+## 工作原理：prompt 是如何被修改的
+
+RAG 通过 **Claude Code Hook 机制**在 prompt 发送给模型之前注入检索结果，有三条路径：
+
+### 路径一：主动检索（`/rag-retrieve`）
+
+用户手动触发，Claude 执行检索后将 chunks 直接作为回复内容呈现。
+
+### 路径二：`rag-mode on` 自动检索（核心路径）
+
+```
+用户输入 prompt
+    ↓
+hook_script.py（UserPromptSubmit Hook）
+    ├─ mode off → 原样发出
+    └─ mode on  → POST /retrieve 检索相关 chunks
+                    ↓
+                  输出 additionalContext
+                    ↓
+                  Claude Code 将其注入 system prompt 区域
+                    ↓
+                  模型看到：[system prompt] + [RAG检索结果] + [用户 prompt]
+```
+
+`additionalContext` 是 Claude Code Hook 协议字段，**注入在 system prompt 层**，模型可见但用户侧不显示，不改变对话结构。
+
+### 检索可观测性
+
+默认开启，可随时切换：
+
+```
+/rag-verbose on   # 开启
+/rag-verbose off  # 关闭（静默执行）
+```
+
+也可在 `config.yaml` 中设置 `retrieve.verbose: false` 永久关闭。
+
+开启时，服务端日志（`tail -f /tmp/claude-local-rag.log`）会实时输出每次检索的完整过程：
+
+```
+[retrieve] 查询: '如何认证？'
+[retrieve] FAISS 返回 9 个候选（库总量 42）
+[retrieve] 阈值过滤（< 0.45）丢弃 5 个，剩余 4 个
+  vec=0.721 kw=0.333 final=0.605 [docs/auth.md] '认证流程分为两步...'
+  vec=0.688 kw=0.500 final=0.632 [docs/api.md] 'Bearer Token 认证...'
+[retrieve] rerank 后顺序:
+  rerank=0.912 'Bearer Token 认证...'
+  rerank=0.743 '认证流程分为两步...'
+[retrieve] 最终返回 3 个 chunks
+```
+
+每条候选显示向量相似度（`vec`）、关键词覆盖率（`kw`）、混合得分（`final`）、来源及文本预览，可直接看出为什么命中以及 rerank 如何调整了排序。
+
+### 真实场景示例
+
+**背景**：团队把内部 API 文档、接口规范、上线 checklist 存入了向量库，开启 `rag-mode on`。
+
+**用户在 Claude Code 里输入：**
+
+```
+/api/v2/orders 接口返回 403，排查一下
+```
+
+**Hook 触发，服务端日志输出：**
+
+```text
+[retrieve] 查询: '/api/v2/orders 接口返回 403，排查一下'
+[retrieve] FAISS 返回 9 个候选（库总量 137）
+[retrieve] 阈值过滤（< 0.45）丢弃 6 个，剩余 3 个
+  vec=0.774 kw=0.600 final=0.722 [api-spec.md] '/api/v2/orders 需要 scope: orders:read，...'
+  vec=0.691 kw=0.400 final=0.604 [auth-guide.md] 'Bearer Token 缺少权限时返回 403，检查...'
+  vec=0.652 kw=0.200 final=0.516 [changelog.md] 'v2.3.0 对 /orders 接口增加了 IP 白名单校验'
+[retrieve] 最终返回 3 个 chunks
+```
+
+**Claude 实际收到的 system prompt 追加内容（用户不可见）：**
+
+```text
+[RAG 自动检索结果]
+[来源: api-spec.md]
+/api/v2/orders 需要 scope: orders:read，调用方需在申请 token 时声明该 scope...
+---
+[来源: auth-guide.md]
+Bearer Token 缺少权限时返回 403，检查 token 的 scope 列表是否包含目标接口所需权限...
+---
+[来源: changelog.md]
+v2.3.0 对 /orders 接口增加了 IP 白名单校验，非白名单 IP 同样返回 403...
+
+请参考以上内容回答用户问题。若无关则忽略。
+```
+
+**Claude 的回复直接定位到：** scope 缺失、IP 白名单两个方向，而不是从零开始猜测。
 
 ---
 

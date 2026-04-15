@@ -11,6 +11,7 @@ chunk:
 
 retrieve:
   top_k: 3
+  verbose: true
 
 rerank:
   enabled: false

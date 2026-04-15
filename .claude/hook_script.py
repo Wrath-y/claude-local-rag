@@ -35,20 +35,7 @@ if mode_match:
     output(f"\n[RAG] 自动检索模式已{'开启' if on else '关闭'}\n")
     sys.exit(0)
 
-# ===== 2. 自动入库检测 =====
-# 检测到入库关键词时，把当前 prompt 直接写入向量库
-ingest_keywords = ['存入向量库', '写入向量库', '加入向量库']
-if any(k in prompt for k in ingest_keywords):
-    try:
-        r = requests.post('http://127.0.0.1:8765/ingest',
-                          json={'text': prompt}, timeout=5)
-        result = r.json()
-        output(f"\n[RAG] 已写入 {result.get('chunks_added', 0)} 个 chunks\n")
-    except Exception as e:
-        output(f"\n[RAG] 写入失败: {e}\n")
-    sys.exit(0)
-
-# ===== 3. mode on 时自动检索 =====
+# ===== 2. mode on 时自动检索 =====
 # 读取持久化标志，若 on 则检索并将结果注入为 additionalContext
 # 服务未启动时静默跳过，不影响正常对话
 if rag_mode_on() and prompt.strip():

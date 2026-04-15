@@ -41,6 +41,8 @@ print(f"[1/3] 模型加载完成，向量维度：{DIM}")
 rerank_enabled: bool = config["rerank"]["enabled"]
 reranker: CrossEncoder = None
 
+verbose_enabled: bool = config["retrieve"].get("verbose", True)
+
 index: faiss.IndexFlatIP = None
 stored_chunks: List[Dict] = []
 chunk_set: set = set()
@@ -198,7 +200,15 @@ def retrieve(req: RetrieveRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
 
+    def log(msg: str):
+        if verbose_enabled:
+            print(msg)
+
+    q_short = req.text[:60] + ("..." if len(req.text) > 60 else "")
+    log(f"[retrieve] 查询: {q_short!r}")
+
     if index.ntotal == 0:
+        log("[retrieve] 向量库为空，返回空结果")
         return RetrieveResponse(chunks=[])
 
     query = f"{QUERY_PREFIX}{req.text}"
@@ -207,31 +217,46 @@ def retrieve(req: RetrieveRequest):
 
     k = min(TOP_K * 3, index.ntotal)
     scores, indices = index.search(embedding, k)
+    log(f"[retrieve] FAISS 返回 {k} 个候选（库总量 {index.ntotal}）")
 
     candidates = []
+    dropped_threshold = 0
     for score, i in zip(scores[0], indices[0]):
         if i >= len(stored_chunks):
             continue
         if score < SCORE_THRESHOLD:
+            dropped_threshold += 1
             continue
         chunk = stored_chunks[i]
         kw = keyword_score(req.text, chunk["text"])
         final_score = score * 0.7 + kw * 0.3
-        candidates.append((final_score, chunk))
+        candidates.append((final_score, chunk, score, kw))
+
+    log(f"[retrieve] 阈值过滤（< {SCORE_THRESHOLD}）丢弃 {dropped_threshold} 个，剩余 {len(candidates)} 个")
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     top_candidates = candidates[:TOP_K]
 
+    for final_score, chunk, vec_score, kw in top_candidates:
+        src = chunk.get("source", "unknown")
+        preview = chunk["text"][:40].replace("\n", " ")
+        log(f"  vec={vec_score:.3f} kw={kw:.3f} final={final_score:.3f} [{src}] {preview!r}")
+
     if rerank_enabled and reranker is not None and top_candidates:
-        pairs = [(req.text, c["text"]) for _, c in top_candidates]
+        pairs = [(req.text, c["text"]) for _, c, _, _ in top_candidates]
         rerank_scores = reranker.predict(pairs, num_workers=0)
-        top_candidates = [
-            c for _, c in sorted(zip(rerank_scores, top_candidates), key=lambda x: x[0], reverse=True)
-        ]
+        reranked = sorted(zip(rerank_scores, top_candidates), key=lambda x: x[0], reverse=True)
+        log("[retrieve] rerank 后顺序:")
+        for rs, (_, chunk, _, _) in reranked:
+            preview = chunk["text"][:40].replace("\n", " ")
+            log(f"  rerank={rs:.3f} {preview!r}")
+        top_candidates = [t for _, t in reranked]
+
+    log(f"[retrieve] 最终返回 {len(top_candidates)} 个 chunks")
 
     results = [
         f"[来源: {c['source']}]\n{c['text']}"
-        for c in top_candidates
+        for _, c, _, _ in top_candidates
     ]
     return RetrieveResponse(chunks=results)
 
@@ -248,10 +273,18 @@ def rerank_toggle(enabled: bool):
     return {"rerank_enabled": rerank_enabled}
 
 
+# ================= VERBOSE TOGGLE =================
+@app.post("/retrieve/verbose")
+def retrieve_verbose(enabled: bool):
+    global verbose_enabled
+    verbose_enabled = enabled
+    return {"verbose_enabled": verbose_enabled}
+
+
 # ================= HEALTH =================
 @app.get("/health")
 def health():
-    return {"status": "ok", "total_chunks": len(stored_chunks), "rerank_enabled": rerank_enabled}
+    return {"status": "ok", "total_chunks": len(stored_chunks), "rerank_enabled": rerank_enabled, "verbose_enabled": verbose_enabled}
 
 
 # ================= SOURCES =================

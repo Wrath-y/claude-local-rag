@@ -7,7 +7,7 @@ import yaml
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from typing import List, Dict
 from collections import Counter
 
@@ -29,12 +29,17 @@ QUERY_PREFIX = config["embedding"]["query_prefix"]
 SCORE_THRESHOLD = 0.45
 # 固定 2 句，行为稳定可预期。
 OVERLAP_SENTENCES = 2
+RERANK_MODEL_NAME = config["rerank"]["model"]
 
 # ================= MODEL =================
 print(f"[1/3] 加载 embedding 模型：{MODEL_NAME} ...")
 model = SentenceTransformer(MODEL_NAME)
 DIM = model.get_embedding_dimension()
 print(f"[1/3] 模型加载完成，向量维度：{DIM}")
+
+# rerank 模型：lazy 加载，首次开启时初始化
+rerank_enabled: bool = config["rerank"]["enabled"]
+reranker: CrossEncoder = None
 
 index: faiss.IndexFlatIP = None
 stored_chunks: List[Dict] = []
@@ -90,7 +95,9 @@ def chunk_text(text: str) -> List[str]:
             current_len = overlap_len
 
     for sentence in sentences:
-        est_tokens = len(sentence)
+        # CJK 字符按 1 token/字，其余（英文、数字、空格等）按 4 字符/token 估算
+        cjk = sum(1 for c in sentence if '\u4e00' <= c <= '\u9fff')
+        est_tokens = cjk + max(1, (len(sentence) - cjk) // 4)
 
         if current_len + est_tokens > CHUNK_MAX and current:
             flush()
@@ -207,18 +214,38 @@ def retrieve(req: RetrieveRequest):
         candidates.append((final_score, chunk))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
+    top_candidates = candidates[:TOP_K]
+
+    if rerank_enabled and reranker is not None and top_candidates:
+        pairs = [(req.text, c["text"]) for _, c in top_candidates]
+        rerank_scores = reranker.predict(pairs)
+        top_candidates = [
+            c for _, c in sorted(zip(rerank_scores, top_candidates), key=lambda x: x[0], reverse=True)
+        ]
 
     results = [
         f"[来源: {c['source']}]\n{c['text']}"
-        for _, c in candidates[:TOP_K]
+        for c in top_candidates
     ]
     return RetrieveResponse(chunks=results)
+
+
+# ================= RERANK TOGGLE =================
+@app.post("/rerank/toggle")
+def rerank_toggle(enabled: bool):
+    global rerank_enabled, reranker
+    rerank_enabled = enabled
+    if enabled and reranker is None:
+        print(f"[rerank] 首次开启，加载模型：{RERANK_MODEL_NAME} ...")
+        reranker = CrossEncoder(RERANK_MODEL_NAME)
+        print("[rerank] 模型加载完成")
+    return {"rerank_enabled": rerank_enabled}
 
 
 # ================= HEALTH =================
 @app.get("/health")
 def health():
-    return {"status": "ok", "total_chunks": len(stored_chunks)}
+    return {"status": "ok", "total_chunks": len(stored_chunks), "rerank_enabled": rerank_enabled}
 
 
 # ================= SOURCES =================

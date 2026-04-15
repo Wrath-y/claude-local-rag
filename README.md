@@ -164,6 +164,30 @@ cd claude-local-rag
 
 ---
 
+### 开启 Rerank 模式
+
+开启后，检索结果会经过 cross-encoder 精排，提升相关性排序精度（适合知识库较大或查询较复杂时使用）：
+
+```
+/rag-rerank on
+```
+
+关闭：
+
+```
+/rag-rerank off
+```
+
+> **首次开启**会下载 rerank 模型（`BAAI/bge-reranker-base`，约 400MB），需等待 10～60 秒。之后进程内复用，无需重复下载。
+>
+> **服务重启后**需重新执行 `/rag-rerank on`，状态不持久化。如需默认开启，修改 `config.yaml` 中的 `rerank.enabled: true`。
+>
+> **延迟影响**：rerank 每次检索额外增加约 50～200ms。
+>
+> **不额外消耗 token**：rerank 在本地模型推理，不调用 Claude API。返回给 Claude 的 chunk 数量不变，上下文大小与关闭时相同。
+
+---
+
 ### 清空知识库
 
 删除所有已存入的文档（操作不可恢复，会要求二次确认）：
@@ -187,6 +211,7 @@ cd claude-local-rag
 | `/rag-status` | 查看状态及 chunk 总数 | 无 |
 | `/rag-sources` | 列出所有来源及各来源 chunk 数 | 无 |
 | `/rag-source-delete <名称>` | 按来源删除 chunk | 无 |
+| `/rag-rerank on/off` | 开启/关闭 rerank 精排 | 无 |
 | `/rag-reset` | 清空全部知识库 | 无 |
 
 ---
@@ -221,6 +246,8 @@ tail -f /tmp/claude-local-rag.log
 | `chunk.min_tokens` | `200` | 每段最小长度 |
 | `chunk.max_tokens` | `400` | 每段最大长度 |
 | `retrieve.top_k` | `3` | 每次检索返回的段落数 |
+| `rerank.enabled` | `false` | 是否默认开启 rerank 精排 |
+| `rerank.model` | `BAAI/bge-reranker-base` | rerank 模型名称 |
 
 ---
 

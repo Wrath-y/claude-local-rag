@@ -4,6 +4,7 @@ import re
 import numpy as np
 import faiss
 import yaml
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
@@ -26,11 +27,10 @@ DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
 SCORE_THRESHOLD = 0.45
-OVERLAP_RATIO = 0.2
+# 固定 2 句，行为稳定可预期。
+OVERLAP_SENTENCES = 2
 
-# ================= INIT =================
-app = FastAPI(title="Local RAG Plugin")
-
+# ================= MODEL =================
 print(f"[1/3] 加载 embedding 模型：{MODEL_NAME} ...")
 model = SentenceTransformer(MODEL_NAME)
 DIM = model.get_embedding_dimension()
@@ -75,7 +75,6 @@ def chunk_text(text: str) -> List[str]:
     chunks = []
     current = []
     current_len = 0
-    overlap_size = max(1, int(len(sentences) * OVERLAP_RATIO)) if sentences else 0
 
     for sentence in sentences:
         # 用字符数估算 token，对中英文均适用
@@ -83,7 +82,8 @@ def chunk_text(text: str) -> List[str]:
 
         if current_len + est_tokens > CHUNK_MAX and current:
             chunks.append("".join(current))
-            current = current[-overlap_size:]
+            # 保留末尾 OVERLAP_SENTENCES 句作为下一个 chunk 的开头，保证语义连续性
+            current = current[-OVERLAP_SENTENCES:]
             current_len = sum(len(s) for s in current)
 
         current.append(sentence)
@@ -91,7 +91,8 @@ def chunk_text(text: str) -> List[str]:
 
         if current_len >= CHUNK_MIN:
             chunks.append("".join(current))
-            current = current[-overlap_size:]
+            # 同上，输出 chunk 后滑动窗口
+            current = current[-OVERLAP_SENTENCES:]
             current_len = sum(len(s) for s in current)
 
     if current:
@@ -101,20 +102,34 @@ def chunk_text(text: str) -> List[str]:
 
 
 # ================= HYBRID SEARCH =================
+# 字符级 bigram（连续2字符）：中文词自然包含 bigram，英文也兼容。
+def _bigrams(s: str) -> List[str]:
+    s = s.lower()
+    return [s[i:i+2] for i in range(len(s) - 1)]
+
+
 def keyword_score(query: str, text: str) -> float:
-    q_words = query.lower().split()
-    t_words = text.lower().split()
-    if not q_words:
+    """计算 query 的 bigram 在 text 中的覆盖率，范围 [0, 1]。"""
+    q_bg = _bigrams(query)
+    if not q_bg:
         return 0.0
-    counter = Counter(t_words)
-    return sum(counter[w] for w in q_words) / len(q_words)
+    t_counter = Counter(_bigrams(text))
+    # 命中数 / query bigram 总数，衡量关键词覆盖度
+    hits = sum(1 for bg in q_bg if t_counter[bg] > 0)
+    return hits / len(q_bg)
 
 
 # ================= STARTUP =================
-@app.on_event("startup")
-def startup():
+# @app.on_event("startup") 在 FastAPI 0.93+ 已弃用，改用 lifespan 上下文管理器
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     load_store()
     print(f"[3/3] 服务就绪，监听 http://127.0.0.1:{config['server']['port']}")
+    yield
+
+
+# ================= INIT =================
+app = FastAPI(title="Local RAG Plugin", lifespan=lifespan)
 
 
 # ================= API =================
@@ -198,6 +213,41 @@ def retrieve(req: RetrieveRequest):
 @app.get("/health")
 def health():
     return {"status": "ok", "total_chunks": len(stored_chunks)}
+
+
+# ================= SOURCES =================
+# 列出所有已入库的来源及各来源 chunk 数，便于管理和溯源。
+@app.get("/sources")
+def sources():
+    counter: Dict[str, int] = {}
+    for c in stored_chunks:
+        src = c.get("source", "unknown")
+        counter[src] = counter.get(src, 0) + 1
+    return {"sources": [{"name": k, "chunks": v} for k, v in sorted(counter.items())]}
+
+
+# ================= DELETE BY SOURCE =================
+# 按来源名称删除 chunks。
+# FAISS IndexFlatIP 不支持按 id 删除，必须用剩余 chunks 重建整个索引。
+@app.delete("/source")
+def delete_source(name: str):
+    global index, stored_chunks, chunk_set
+    remaining = [c for c in stored_chunks if c.get("source") != name]
+    removed = len(stored_chunks) - len(remaining)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail=f"source '{name}' not found")
+
+    new_index = faiss.IndexFlatIP(DIM)
+    if remaining:
+        texts = [f"{DOC_PREFIX}{c['text']}" for c in remaining]
+        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        new_index.add(np.array(embeddings, dtype=np.float32))
+
+    index = new_index
+    stored_chunks = remaining
+    chunk_set = set(c["text"] for c in remaining)
+    save_store()
+    return {"status": "ok", "removed_chunks": removed}
 
 
 # ================= RESET =================

@@ -38,8 +38,10 @@ fi
 echo "[3/5] 注册 /rag 斜杠命令..."
 
 mkdir -p "$COMMANDS_DIR"
-cp "$SCRIPT_DIR/.claude/commands/rag.md" "$COMMANDS_DIR/rag.md"
-echo "  已写入 $COMMANDS_DIR/rag.md"
+for f in "$SCRIPT_DIR/.claude/commands"/rag*.md; do
+  cp "$f" "$COMMANDS_DIR/$(basename "$f")"
+  echo "  已写入 $COMMANDS_DIR/$(basename "$f")"
+done
 
 echo "[4/5] 配置 Claude Code 自动启动 Hook..."
 mkdir -p "$HOME/.claude"

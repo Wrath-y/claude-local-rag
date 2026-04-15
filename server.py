@@ -7,9 +7,10 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
-from typing import List
+from typing import List, Dict
+from collections import Counter
 
-# Load config
+# ================= CONFIG =================
 _dir = os.path.dirname(os.path.abspath(__file__))
 
 with open(os.path.join(_dir, "config.yaml"), "r") as f:
@@ -24,28 +25,31 @@ TEXTS_PATH = os.path.join(_dir, config["storage"]["texts_path"])
 DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
-app = FastAPI(title="Local RAG Plugin")
+SCORE_THRESHOLD = 0.45
+OVERLAP_RATIO = 0.2
 
-print(f"[1/3] 加载 embedding 模型：{MODEL_NAME} ...")
+# ================= INIT =================
+app = FastAPI(title="Local RAG Plugin Pro")
+
 model = SentenceTransformer(MODEL_NAME)
 DIM = model.get_embedding_dimension()
-print(f"[1/3] 模型加载完成，向量维度：{DIM}")
 
 index: faiss.IndexFlatIP = None
-stored_chunks: List[str] = []
+stored_chunks: List[Dict] = []
+chunk_set = set()  # 去重
 
-
+# ================= STORAGE =================
 def load_store():
-    global index, stored_chunks
+    global index, stored_chunks, chunk_set
     if os.path.exists(INDEX_PATH) and os.path.exists(TEXTS_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(TEXTS_PATH, "rb") as f:
             stored_chunks = pickle.load(f)
-        print(f"[2/3] 向量库加载完成，已有 {len(stored_chunks)} 个 chunk")
+        chunk_set = set(c["text"] for c in stored_chunks)
     else:
         index = faiss.IndexFlatIP(DIM)
         stored_chunks = []
-        print("[2/3] 向量库初始化（空库）")
+        chunk_set = set()
 
 
 def save_store():
@@ -54,6 +58,7 @@ def save_store():
         pickle.dump(stored_chunks, f)
 
 
+# ================= CHUNK =================
 def chunk_text(text: str) -> List[str]:
     sentences = re.split(r'(?<=[。！？.!?\n])\s*', text)
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -61,34 +66,50 @@ def chunk_text(text: str) -> List[str]:
     chunks = []
     current = []
     current_len = 0
+    overlap_size = int(CHUNK_MAX * OVERLAP_RATIO)
 
     for sentence in sentences:
-        est_tokens = len(sentence)
+        est_tokens = len(sentence.split())  # 修复 token 估算
+
         if current_len + est_tokens > CHUNK_MAX and current:
-            chunks.append("".join(current))
-            current = []
-            current_len = 0
+            chunks.append(" ".join(current))
+            current = current[-overlap_size:] if overlap_size < len(current) else current
+            current_len = sum(len(s.split()) for s in current)
+
         current.append(sentence)
         current_len += est_tokens
+
         if current_len >= CHUNK_MIN:
-            chunks.append("".join(current))
-            current = []
-            current_len = 0
+            chunks.append(" ".join(current))
+            current = current[-overlap_size:] if overlap_size < len(current) else current
+            current_len = sum(len(s.split()) for s in current)
 
     if current:
-        chunks.append("".join(current))
+        chunks.append(" ".join(current))
 
-    return [c for c in chunks if c.strip()]
+    return chunks
 
 
+# ================= HYBRID SEARCH =================
+def keyword_score(query: str, text: str) -> float:
+    q_words = query.lower().split()
+    t_words = text.lower().split()
+    if not q_words:
+        return 0
+    counter = Counter(t_words)
+    return sum(counter[w] for w in q_words) / len(q_words)
+
+
+# ================= STARTUP =================
 @app.on_event("startup")
 def startup():
     load_store()
-    print(f"[3/3] 服务就绪，监听 http://127.0.0.1:{config['server']['port']}")
 
 
+# ================= API =================
 class IngestRequest(BaseModel):
     text: str
+    source: str = "unknown"
 
 
 class RetrieveRequest(BaseModel):
@@ -99,55 +120,116 @@ class RetrieveResponse(BaseModel):
     chunks: List[str]
 
 
+# ================= INGEST =================
 @app.post("/ingest")
 def ingest(req: IngestRequest):
     if not req.text.strip():
-        raise HTTPException(status_code=400, detail="text is empty")
+        raise HTTPException(400, "text empty")
 
     chunks = chunk_text(req.text)
-    if not chunks:
-        raise HTTPException(status_code=400, detail="no chunks generated")
 
-    prefixed = [f"{DOC_PREFIX}{c}" for c in chunks]
-    embeddings = model.encode(prefixed, normalize_embeddings=True, show_progress_bar=False)
+    new_chunks = []
+    for c in chunks:
+        if c not in chunk_set:
+            chunk_set.add(c)
+            new_chunks.append({
+                "text": c,
+                "source": req.source
+            })
+
+    if not new_chunks:
+        return {"status": "no new chunks"}
+
+    texts = [f"{DOC_PREFIX}{c['text']}" for c in new_chunks]
+
+    embeddings = model.encode(texts, normalize_embeddings=True)
     embeddings = np.array(embeddings, dtype=np.float32)
 
     index.add(embeddings)
-    stored_chunks.extend(chunks)
+    stored_chunks.extend(new_chunks)
+
     save_store()
 
-    return {"status": "ok", "chunks_added": len(chunks)}
+    return {"status": "ok", "chunks_added": len(new_chunks)}
 
 
+# ================= RETRIEVE =================
 @app.post("/retrieve", response_model=RetrieveResponse)
 def retrieve(req: RetrieveRequest):
     if not req.text.strip():
-        raise HTTPException(status_code=400, detail="text is empty")
+        raise HTTPException(400, "text empty")
+
     if index.ntotal == 0:
         return RetrieveResponse(chunks=[])
 
-    prefixed = f"{QUERY_PREFIX}{req.text}"
-    embedding = model.encode([prefixed], normalize_embeddings=True, show_progress_bar=False)
+    query = f"{QUERY_PREFIX}{req.text}"
+    embedding = model.encode([query], normalize_embeddings=True)
     embedding = np.array(embedding, dtype=np.float32)
 
-    k = min(TOP_K, index.ntotal)
-    _, indices = index.search(embedding, k)
+    try:
+        scores, indices = index.search(embedding, TOP_K * 3)
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
-    results = [stored_chunks[i] for i in indices[0] if i < len(stored_chunks)]
-    return RetrieveResponse(chunks=results)
+    candidates = []
+    for score, i in zip(scores[0], indices[0]):
+        if i >= len(stored_chunks):
+            continue
+        if score < SCORE_THRESHOLD:
+            continue
+
+        chunk = stored_chunks[i]
+        kw_score = keyword_score(req.text, chunk["text"])
+
+        final_score = score * 0.7 + kw_score * 0.3  # hybrid
+        candidates.append((final_score, chunk))
+
+    # ===== RERANK =====
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    top_chunks = [
+        f"[Source: {c['source']}]\n{c['text']}"
+        for _, c in candidates[:TOP_K]
+    ]
+
+    return RetrieveResponse(chunks=top_chunks)
 
 
+# ================= PROMPT TEMPLATE =================
+def build_prompt(query: str, chunks: List[str]) -> str:
+    context = "\n\n".join(chunks)
+
+    return f"""
+You are a helpful assistant. Answer ONLY based on the provided context.
+
+If the answer is not in the context, say "I don't know".
+
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:
+"""
+
+
+# ================= HEALTH =================
 @app.get("/health")
 def health():
-    return {"status": "ok", "total_chunks": len(stored_chunks)}
+    return {"total_chunks": len(stored_chunks)}
 
 
+# ================= RESET =================
 @app.delete("/reset")
 def reset():
-    global index, stored_chunks
+    global index, stored_chunks, chunk_set
     index = faiss.IndexFlatIP(DIM)
     stored_chunks = []
-    for path in [INDEX_PATH, TEXTS_PATH]:
-        if os.path.exists(path):
-            os.remove(path)
+    chunk_set = set()
+
+    for p in [INDEX_PATH, TEXTS_PATH]:
+        if os.path.exists(p):
+            os.remove(p)
+
     return {"status": "reset"}

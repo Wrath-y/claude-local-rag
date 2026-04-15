@@ -103,7 +103,7 @@ cd claude-local-rag
 示例：
 
 ```
-/rag-retrieve 公司的报销流程是什么？
+/rag-retrieve Redis 缓存穿透怎么处理？
 ```
 
 > **Token 消耗**：检索操作本身不消耗 token。返回结果如果用于后续对话，会作为上下文占用少量 input token（约 200～600 token）。
@@ -139,6 +139,22 @@ cd claude-local-rag
 ```
 /rag-status
 ```
+
+---
+
+### 更新文档
+
+文档内容变更后，用同样的输入重新入库：
+
+```
+/rag-update https://xxx.feishu.cn/docx/xxx
+/rag-update /path/to/file.txt
+/rag-update https://xxx.feishu.cn/docx/xxx --source API文档v2
+```
+
+命令会自动完成两步：先删除该来源的全部旧 chunks，再拉取最新内容重新写入。来源标识规则与 `/rag` 相同。
+
+> 若该来源从未入库（首次使用），跳过删除步骤直接写入。
 
 ---
 
@@ -190,11 +206,13 @@ cd claude-local-rag
 
 ### 清空知识库
 
-删除所有已存入的文档（操作不可恢复，会要求二次确认）：
+删除所有已存入的文档：
 
 ```
 /rag-reset
 ```
+
+命令会展示当前 chunk 总数，并弹出选项让用户选择「确认清空」或「取消」，确认后才执行删除。
 
 > **Token 消耗**：不消耗 token。
 
@@ -205,6 +223,7 @@ cd claude-local-rag
 | 命令 | 说明 | 额外 Token |
 |------|------|-----------|
 | `/rag <内容或链接>` | 存入文档 | 无 |
+| `/rag-update <链接或路径>` | 更新已有来源（删旧 + 重新入库） | 无 |
 | `/rag-retrieve <问题>` | 主动检索 | 基于文本长度的近似 token 估算 |
 | `/rag-mode on` | 开启自动检索（持久化） | 基于文本长度的近似 token 估算 |
 | `/rag-mode off` | 关闭自动检索 | 无 |
@@ -213,7 +232,7 @@ cd claude-local-rag
 | `/rag-source-delete <名称>` | 按来源删除 chunk | 无 |
 | `/rag-rerank on/off` | 开启/关闭 rerank 精排 | 无 |
 | `/rag-verbose on/off` | 开启/关闭检索可观测性日志 | 无 |
-| `/rag-reset` | 清空全部知识库 | 无 |
+| `/rag-reset` | 清空全部知识库（弹出选项确认） | 无 |
 
 ---
 

@@ -1,15 +1,19 @@
+import io
 import os
 import pickle
 import re
+import shutil
+import zipfile
 import numpy as np
 import faiss
 import yaml
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from rank_bm25 import BM25Okapi
 from typing import List, Dict
-from collections import Counter
 
 # ================= CONFIG =================
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,10 +50,45 @@ verbose_enabled: bool = config["retrieve"].get("verbose", True)
 index: faiss.IndexFlatIP = None
 stored_chunks: List[Dict] = []
 chunk_set: set = set()
+bm25: BM25Okapi = None
+_emb_cache: Dict[str, np.ndarray] = {}  # text → normalized embedding
+_stats = {"total_queries": 0, "zero_hit_queries": 0, "total_chunks_returned": 0}
 
 # ================= STORAGE =================
+def encode_with_cache(texts: List[str]) -> np.ndarray:
+    """Encode texts with DOC_PREFIX, returning cache hits instantly and batching misses."""
+    result = np.zeros((len(texts), DIM), dtype=np.float32)
+    miss_idx: List[int] = []
+    miss_prefixed: List[str] = []
+
+    for i, t in enumerate(texts):
+        if t in _emb_cache:
+            result[i] = _emb_cache[t]
+        else:
+            miss_idx.append(i)
+            miss_prefixed.append(f"{DOC_PREFIX}{t}")
+
+    if miss_prefixed:
+        embs = model.encode(miss_prefixed, normalize_embeddings=True, show_progress_bar=False)
+        for j, i in enumerate(miss_idx):
+            _emb_cache[texts[i]] = embs[j]
+            result[i] = embs[j]
+
+    return np.array(result, dtype=np.float32)
+
+
+def rebuild_bm25():
+    global bm25
+    if stored_chunks:
+        corpus = [_bigrams(c["text"]) or [c["text"].lower()] for c in stored_chunks]
+        bm25 = BM25Okapi(corpus)
+    else:
+        bm25 = None
+
+
 def load_store():
     global index, stored_chunks, chunk_set
+    _emb_cache.clear()
     if os.path.exists(INDEX_PATH) and os.path.exists(TEXTS_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(TEXTS_PATH, "rb") as f:
@@ -60,12 +99,18 @@ def load_store():
         else:
             stored_chunks = raw
         chunk_set = set(c["text"] for c in stored_chunks)
+        # 从 FAISS 向量直接恢复 embedding 缓存，避免 delete_source 重建索引时重复 encode
+        for i, chunk in enumerate(stored_chunks):
+            vec = np.zeros(DIM, dtype=np.float32)
+            index.reconstruct(i, vec)
+            _emb_cache[chunk["text"]] = vec
         print(f"[2/3] 向量库加载完成，已有 {len(stored_chunks)} 个 chunk")
     else:
         index = faiss.IndexFlatIP(DIM)
         stored_chunks = []
         chunk_set = set()
         print("[2/3] 向量库初始化（空库）")
+    rebuild_bm25()
 
 
 def save_store():
@@ -118,20 +163,10 @@ def chunk_text(text: str) -> List[str]:
 
 # ================= HYBRID SEARCH =================
 # 字符级 bigram（连续2字符）：中文词自然包含 bigram，英文也兼容。
+# 同时作为 BM25 的 tokenizer，BM25 负责 TF-IDF 加权，比原始覆盖率更准确。
 def _bigrams(s: str) -> List[str]:
     s = s.lower()
     return [s[i:i+2] for i in range(len(s) - 1)]
-
-
-def keyword_score(query: str, text: str) -> float:
-    """计算 query 的 bigram 在 text 中的覆盖率，范围 [0, 1]。"""
-    q_bg = _bigrams(query)
-    if not q_bg:
-        return 0.0
-    t_counter = Counter(_bigrams(text))
-    # 命中数 / query bigram 总数，衡量关键词覆盖度
-    hits = sum(1 for bg in q_bg if t_counter[bg] > 0)
-    return hits / len(q_bg)
 
 
 # ================= STARTUP =================
@@ -183,13 +218,11 @@ def ingest(req: IngestRequest):
     if not new_chunks:
         return {"status": "ok", "chunks_added": 0}
 
-    texts = [f"{DOC_PREFIX}{c['text']}" for c in new_chunks]
-    embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-    embeddings = np.array(embeddings, dtype=np.float32)
-
+    embeddings = encode_with_cache([c["text"] for c in new_chunks])
     index.add(embeddings)
     stored_chunks.extend(new_chunks)
     save_store()
+    rebuild_bm25()
 
     return {"status": "ok", "chunks_added": len(new_chunks)}
 
@@ -219,7 +252,9 @@ def retrieve(req: RetrieveRequest):
     scores, indices = index.search(embedding, k)
     log(f"[retrieve] FAISS 返回 {k} 个候选（库总量 {index.ntotal}）")
 
-    candidates = []
+    # 先过滤无效候选，再批量计算 BM25（避免逐条调用，性能更好）
+    valid_indices: List[int] = []
+    valid_vec_scores: List[float] = []
     dropped_threshold = 0
     for score, i in zip(scores[0], indices[0]):
         if i >= len(stored_chunks):
@@ -227,12 +262,26 @@ def retrieve(req: RetrieveRequest):
         if score < SCORE_THRESHOLD:
             dropped_threshold += 1
             continue
-        chunk = stored_chunks[i]
-        kw = keyword_score(req.text, chunk["text"])
-        final_score = score * 0.7 + kw * 0.3
-        candidates.append((final_score, chunk, score, kw))
+        valid_indices.append(int(i))
+        valid_vec_scores.append(float(score))
 
-    log(f"[retrieve] 阈值过滤（< {SCORE_THRESHOLD}）丢弃 {dropped_threshold} 个，剩余 {len(candidates)} 个")
+    log(f"[retrieve] 阈值过滤（< {SCORE_THRESHOLD}）丢弃 {dropped_threshold} 个，剩余 {len(valid_indices)} 个")
+
+    # BM25 批量评分，归一化到 [0, 1]
+    if bm25 is not None and valid_indices:
+        query_tokens = _bigrams(req.text)
+        all_bm25 = bm25.get_scores(query_tokens)
+        raw_kw = [float(all_bm25[i]) for i in valid_indices]
+        max_kw = max(raw_kw) if max(raw_kw) > 0 else 1.0
+        kw_scores = [s / max_kw for s in raw_kw]
+    else:
+        kw_scores = [0.0] * len(valid_indices)
+
+    candidates = []
+    for idx, vec_score, kw in zip(valid_indices, valid_vec_scores, kw_scores):
+        chunk = stored_chunks[idx]
+        final_score = vec_score * 0.7 + kw * 0.3
+        candidates.append((final_score, chunk, vec_score, kw))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     top_candidates = candidates[:TOP_K]
@@ -240,7 +289,7 @@ def retrieve(req: RetrieveRequest):
     for final_score, chunk, vec_score, kw in top_candidates:
         src = chunk.get("source", "unknown")
         preview = chunk["text"][:40].replace("\n", " ")
-        log(f"  vec={vec_score:.3f} kw={kw:.3f} final={final_score:.3f} [{src}] {preview!r}")
+        log(f"  vec={vec_score:.3f} bm25={kw:.3f} final={final_score:.3f} [{src}] {preview!r}")
 
     if rerank_enabled and reranker is not None and top_candidates:
         pairs = [(req.text, c["text"]) for _, c, _, _ in top_candidates]
@@ -253,6 +302,11 @@ def retrieve(req: RetrieveRequest):
         top_candidates = [t for _, t in reranked]
 
     log(f"[retrieve] 最终返回 {len(top_candidates)} 个 chunks")
+
+    _stats["total_queries"] += 1
+    if not top_candidates:
+        _stats["zero_hit_queries"] += 1
+    _stats["total_chunks_returned"] += len(top_candidates)
 
     results = [
         f"[来源: {c['source']}]\n{c['text']}"
@@ -287,6 +341,23 @@ def health():
     return {"status": "ok", "total_chunks": len(stored_chunks), "rerank_enabled": rerank_enabled, "verbose_enabled": verbose_enabled}
 
 
+# ================= STATS =================
+@app.get("/stats")
+def stats():
+    total = _stats["total_queries"]
+    zero = _stats["zero_hit_queries"]
+    returned = _stats["total_chunks_returned"]
+    hit_rate = round((total - zero) / total * 100, 1) if total > 0 else None
+    avg_chunks = round(returned / total, 2) if total > 0 else None
+    return {
+        "total_queries": total,
+        "zero_hit_queries": zero,
+        "hit_rate_pct": hit_rate,
+        "avg_chunks_per_query": avg_chunks,
+        "note": "重启服务后统计重置"
+    }
+
+
 # ================= SOURCES =================
 # 列出所有已入库的来源及各来源 chunk 数，便于管理和溯源。
 @app.get("/sources")
@@ -311,14 +382,17 @@ def delete_source(name: str):
 
     new_index = faiss.IndexFlatIP(DIM)
     if remaining:
-        texts = [f"{DOC_PREFIX}{c['text']}" for c in remaining]
-        embeddings = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
-        new_index.add(np.array(embeddings, dtype=np.float32))
+        embeddings = encode_with_cache([c["text"] for c in remaining])
+        new_index.add(embeddings)
 
     index = new_index
     stored_chunks = remaining
     chunk_set = set(c["text"] for c in remaining)
+    # 清理不再存在于任何来源的缓存条目，避免 rag-update 后缓存持续膨胀
+    for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
+        del _emb_cache[k]
     save_store()
+    rebuild_bm25()
     return {"status": "ok", "removed_chunks": removed}
 
 
@@ -329,7 +403,49 @@ def reset():
     index = faiss.IndexFlatIP(DIM)
     stored_chunks = []
     chunk_set = set()
+    _emb_cache.clear()
+    rebuild_bm25()
     for p in [INDEX_PATH, TEXTS_PATH]:
         if os.path.exists(p):
             os.remove(p)
     return {"status": "reset"}
+
+
+# ================= EXPORT =================
+@app.get("/export")
+def export():
+    if not os.path.exists(INDEX_PATH) or not os.path.exists(TEXTS_PATH):
+        raise HTTPException(status_code=404, detail="向量库为空，无数据可导出")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(INDEX_PATH, "index.bin")
+        zf.write(TEXTS_PATH, "chunks.pkl")
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=rag_backup.zip"},
+    )
+
+
+# ================= IMPORT =================
+@app.post("/import")
+async def import_kb(file: UploadFile = File(...)):
+    content = await file.read()
+    buf = io.BytesIO(content)
+    try:
+        with zipfile.ZipFile(buf, "r") as zf:
+            if "index.bin" not in zf.namelist() or "chunks.pkl" not in zf.namelist():
+                raise HTTPException(status_code=400, detail="无效备份：缺少 index.bin 或 chunks.pkl")
+            tmp_index = INDEX_PATH + ".tmp"
+            tmp_texts = TEXTS_PATH + ".tmp"
+            with open(tmp_index, "wb") as f:
+                f.write(zf.read("index.bin"))
+            with open(tmp_texts, "wb") as f:
+                f.write(zf.read("chunks.pkl"))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="不是有效的 zip 文件")
+    shutil.move(tmp_index, INDEX_PATH)
+    shutil.move(tmp_texts, TEXTS_PATH)
+    load_store()
+    return {"status": "ok", "chunks_imported": len(stored_chunks)}

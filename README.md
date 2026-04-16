@@ -69,7 +69,8 @@ cd claude-local-rag
 ```bash
 /rag 你的文档内容...                              # 直接粘贴文字
 /rag https://xxx.feishu.cn/docx/xxx              # 飞书文档链接
-/rag /path/to/file.txt                           # 本地文件路径
+/rag https://example.com/docs/api                # 任意网页 URL
+/rag /path/to/file.txt                           # 本地文件路径（支持 .txt .md .pdf 等）
 /rag /path/to/file.txt --source 产品手册v2        # 自定义来源标识
 ```
 
@@ -77,6 +78,7 @@ cd claude-local-rag
 |---------|-----------------|
 | 直接文字 | `manual` |
 | 飞书文档链接 | 链接 URL |
+| 任意网页 URL | 链接 URL |
 | 本地文件路径 | 文件名（如 `手册.txt`） |
 
 > 📌 检索结果中会显示 `[来源: xxx]`，也可按来源单独删除。
@@ -136,10 +138,12 @@ cd claude-local-rag
 ### 📊 管理知识库
 
 ```bash
-/rag-status                        # 查看服务状态和 chunk 总数
+/rag-status                        # 查看服务状态、chunk 总数及检索命中率
 /rag-sources                       # 列出所有来源及各来源 chunk 数
 /rag-source-delete <来源名称>       # 删除指定来源（弹出确认）
 /rag-reset                         # 清空全部知识库（弹出确认）
+/rag-export ~/backup.zip           # 导出知识库为 zip（可用于迁移）
+/rag-import ~/backup.zip           # 从备份导入（弹出确认，替换现有数据）
 ```
 
 ---
@@ -168,10 +172,12 @@ cd claude-local-rag
 | `/rag-auto-index on/off` | 代码自动入库 | — |
 | `/rag-rerank on/off` | rerank 精排 | — |
 | `/rag-verbose on/off` | 检索可观测性日志 | — |
-| `/rag-status` | 服务状态 + chunk 总数 | — |
+| `/rag-status` | 服务状态 + chunk 总数 + 检索命中率统计 | — |
 | `/rag-sources` | 列出所有来源及各来源 chunk 数 | — |
 | `/rag-source-delete <名称>` | 按来源删除（名称需与入库时的来源标识完全一致） | — |
 | `/rag-reset` | 清空全部知识库 | — |
+| `/rag-export [路径]` | 导出知识库为 zip 备份（默认 `~/rag_backup.zip`） | — |
+| `/rag-import <zip路径>` | 从 zip 备份导入，替换当前知识库（有确认步骤） | — |
 
 ---
 
@@ -195,6 +201,38 @@ UserPromptSubmit Hook（hook_script.py）
 
 `additionalContext` 注入在 system prompt 层，**模型可见，用户侧不显示**，不改变对话结构。
 
+### 检索流水线
+
+```
+用户问题
+    ↓
+① FAISS 向量检索（取 top_k × 3 候选，余弦相似度）
+    ↓
+② 阈值过滤（相似度 < 0.45 丢弃）
+    ↓
+③ BM25 混合评分（final = vec × 0.7 + bm25 × 0.3）→ 取 top_k
+    ↓
+④ Cross-Encoder Rerank（可选，开启后重排 top_k 顺序）
+    ↓
+返回最终 chunks，注入 system prompt
+```
+
+### 入库流水线
+
+```
+原始文本（粘贴 / 文件 / URL / 飞书文档）
+    ↓
+Chunk 切分（按句子边界，200–400 token/块，相邻块保留 2 句重叠）
+    ↓
+Embedding 缓存命中？→ 是：直接复用向量；否：调用 BGE 模型编码
+    ↓
+FAISS IndexFlatIP 写入 + BM25 索引重建
+    ↓
+持久化（index.bin + chunks.pkl）
+```
+
+> **关键优化**：Embedding 缓存在服务启动时从 FAISS 向量自动恢复，无需重新 encode。删除来源后重建索引时，所有保留 chunk 均命中缓存，延迟极低。缓存在删来源时同步清理已失效条目，`/rag-update` 频繁更新文档不会造成缓存膨胀。
+
 ### 检索可观测性
 
 ```bash
@@ -206,16 +244,16 @@ tail -f /tmp/claude-local-rag.log
 [retrieve] 查询: '/api/v2/orders 接口返回 403，排查一下'
 [retrieve] FAISS 返回 9 个候选（库总量 137）
 [retrieve] 阈值过滤（< 0.45）丢弃 6 个，剩余 3 个
-  vec=0.774 kw=0.600 final=0.722 [api-spec.md] '/api/v2/orders 需要 scope: orders:read...'
-  vec=0.691 kw=0.400 final=0.604 [auth-guide.md] 'Bearer Token 缺少权限时返回 403...'
-  vec=0.652 kw=0.200 final=0.516 [changelog.md] 'v2.3.0 增加了 IP 白名单校验'
+  vec=0.774 bm25=0.600 final=0.722 [api-spec.md] '/api/v2/orders 需要 scope: orders:read...'
+  vec=0.691 bm25=0.400 final=0.604 [auth-guide.md] 'Bearer Token 缺少权限时返回 403...'
+  vec=0.652 bm25=0.200 final=0.516 [changelog.md] 'v2.3.0 增加了 IP 白名单校验'
 [retrieve] rerank 后顺序:
   rerank=0.912 'Bearer Token 缺少权限时返回 403...'
   rerank=0.743 '/api/v2/orders 需要 scope: orders:read...'
 [retrieve] 最终返回 3 个 chunks
 ```
 
-每条候选显示向量相似度（`vec`）、关键词覆盖率（`kw`）、混合得分（`final`）、来源及文本预览。
+每条候选显示向量相似度（`vec`）、BM25 关键词得分（`bm25`）、混合得分（`final`）、来源及文本预览。
 
 ### 真实场景示例
 
@@ -305,6 +343,45 @@ claude-local-rag/
         ├── rag-auto-index.md
         └── ...
 ```
+
+---
+
+## 路线图
+
+> 标记当前已实现功能，未勾选项为计划中的改进方向。欢迎通过 Issue 或 PR 参与共建。
+
+**检索质量**
+
+- [x] 向量语义检索（FAISS + BGE Embedding）
+- [x] BM25 混合评分（vec × 0.7 + bm25 × 0.3），BM25 替代 bigram 覆盖率，提升长尾词召回
+- [x] Cross-Encoder Rerank 精排
+- [ ] Chunk 首尾重叠（overlap），避免语义在边界处截断
+- [ ] 语义切分（按段落/主题边界，替代当前句子边界切分）
+- [ ] 动态 top_k（根据剩余上下文窗口自动调整返回数量）
+
+**知识库管理**
+
+- [x] 按来源管理（入库 / 更新 / 删除）
+- [x] 支持飞书文档、本地文件、纯文本多种输入
+- [x] 代码文件自动入库（PostToolUse Hook）
+- [x] Embedding 缓存（跳过已向量化的相同内容，加速重复入库）
+- [ ] 定时重新索引（监听文件变更，自动触发 `/rag-update`）
+- [x] 知识库导出 / 导入（备份 `index.bin` + `chunks.pkl` 并迁移）
+
+**文档格式支持**
+
+- [x] 纯文本 / Markdown
+- [x] 飞书云文档
+- [x] PDF 解析入库
+- [ ] Word / Excel 文件解析
+- [x] 网页 URL 抓取（非飞书）
+
+**可观测性与调优**
+
+- [x] 检索可观测性日志（vec / bm25 / final 评分逐条展示）
+- [x] `/rag-verbose on/off` 开关
+- [ ] Web 管理界面（可视化查看 chunks、测试检索效果）
+- [x] 检索命中率统计（帮助判断入库质量和 top_k 设置是否合理）
 
 ---
 

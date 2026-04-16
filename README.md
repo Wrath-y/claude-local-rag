@@ -266,6 +266,21 @@ tail -f /tmp/claude-local-rag.log   # 查看运行日志
 | `rerank.enabled` | `false` | 是否默认开启 rerank |
 | `rerank.model` | `BAAI/bge-reranker-base` | rerank 模型 |
 
+### 为什么 top_k 默认是 3？
+
+`top_k = 3` 是在**召回率**与 **token 成本**之间取得平衡的经验值：
+
+- **Token 预算**：每个 chunk 约 200–400 token，3 个合计 ~600–1200 token，不会让检索结果本身成为消耗大头
+- **精排质量兜底**：向量检索 → 混合评分 → Rerank 三层过滤，3 个高质量结果优于 10 个良莠不齐的候选
+- **"Lost in the Middle"**：LLM 对上下文中间位置的注意力已知会下降，chunk 越多反而影响精度
+
+| 场景 | 建议值 |
+|------|--------|
+| 默认 / 通用 | `3` |
+| 主题分散、多文档综合 | `5` |
+| 极度关注 token 成本 | `1–2` |
+| 不建议超过 | `8` |
+
 ---
 
 ## 项目结构
@@ -330,4 +345,16 @@ tail -f /tmp/claude-local-rag.log
 <summary><b>Q：/clear 之后 RAG 还能用吗？</b></summary>
 
 可以。`/clear` 只清空对话上下文，不影响向量库数据、持久化标志文件（rag_mode 等）和后台服务。
+</details>
+
+<details>
+<summary><b>Q：为什么不支持 Query Rewriting（查询改写）？</b></summary>
+
+Query Rewriting 通过 LLM 将用户问题改写为更适合检索的形式来提升召回率，是常见的 RAG 增强手段。本项目**有意不引入**，原因如下：
+
+- **违背节省 token 的核心目标**：每次改写都需要额外调用 LLM，反而增加消耗
+- **同步 Hook 不适合 LLM 调用**：`UserPromptSubmit` Hook 是同步拦截，LLM 调用会引入明显延迟
+- **已有三层过滤兜底**：向量语义检索 → 关键词混合评分 → Rerank 精排，覆盖了大多数检索场景
+
+> 如果遇到指代不清的查询（如「那这个呢？」），建议使用 `/rag-retrieve <完整问题>` 主动检索，效果优于依赖自动模式。
 </details>

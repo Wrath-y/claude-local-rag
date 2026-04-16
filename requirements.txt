@@ -6,3 +6,4 @@ pyyaml
 numpy
 requests
 rank-bm25
+python-multipart

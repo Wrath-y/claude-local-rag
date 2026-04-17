@@ -336,6 +336,7 @@ type %TEMP%\claude-local-rag.log             # 查看运行日志
 | `chunk.min_tokens` | `200` | 每段最小长度 |
 | `chunk.max_tokens` | `400` | 每段最大长度 |
 | `retrieve.top_k` | `3` | 检索返回的段落数 |
+| `log.lang` | `zh` | 日志语言：`zh`（中文）或 `en`（English） |
 | `retrieve.verbose` | `true` | 是否输出检索日志 |
 | `retrieve.dynamic_top_k` | `false` | 是否开启动态 top_k |
 | `retrieve.context_window` | `180000` | 模型上下文窗口 token 数 |

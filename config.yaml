@@ -24,5 +24,8 @@ storage:
   index_path: "index.bin"
   texts_path: "chunks.pkl"
 
+log:
+  lang: "en"   # 日志语言：zh（中文）或 en（English）
+
 server:
   port: 8765

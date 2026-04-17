@@ -336,6 +336,7 @@ Edit `config.yaml` to tune parameters:
 | `chunk.min_tokens` | `200` | Minimum tokens per chunk |
 | `chunk.max_tokens` | `400` | Maximum tokens per chunk |
 | `retrieve.top_k` | `3` | Number of chunks returned per retrieval |
+| `log.lang` | `en` | Log language: `zh` (Chinese) or `en` (English) |
 | `retrieve.verbose` | `true` | Enable retrieval logs |
 | `retrieve.dynamic_top_k` | `false` | Enable dynamic top_k |
 | `retrieve.context_window` | `180000` | Model context window size (tokens) |

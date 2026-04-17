@@ -8,12 +8,48 @@ import json
 import os
 import shutil
 import sys
+import yaml
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 SETTINGS_PATH = os.path.join(HOME, ".claude", "settings.json")
 COMMANDS_SRC = os.path.join(SCRIPT_DIR, ".claude", "commands")
 COMMANDS_DST = os.path.join(HOME, ".claude", "commands")
+
+# ── 读取日志语言 ──────────────────────────────────────────────
+def _load_lang() -> str:
+    config_path = os.path.join(SCRIPT_DIR, "config.yaml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get("log", {}).get("lang", "zh")
+    except Exception:
+        return "zh"
+
+LANG = _load_lang()
+
+_MSGS = {
+    "zh": {
+        "step_commands":  "[3/5] 注册 /rag 命令...",
+        "cmd_written":    "  已写入 {dst}",
+        "step_hook":      "[4/5] 配置 Claude Code 自动启动 Hook...",
+        "hook_written":   "  已写入 SessionStart hook → {path}",
+        "status_msg":     "启动 RAG 服务...",
+    },
+    "en": {
+        "step_commands":  "[3/5] Registering /rag commands...",
+        "cmd_written":    "  Written: {dst}",
+        "step_hook":      "[4/5] Configuring Claude Code auto-start Hook...",
+        "hook_written":   "  SessionStart hook written → {path}",
+        "status_msg":     "Starting RAG service...",
+    },
+}
+
+def _t(key: str, **kwargs) -> str:
+    lang = LANG if LANG in _MSGS else "zh"
+    template = _MSGS[lang].get(key, key)
+    return template.format(**kwargs) if kwargs else template
+
 
 # Windows: %TEMP%\claude-local-rag.log  /  Unix: /tmp/claude-local-rag.log
 if sys.platform == "win32":
@@ -67,7 +103,7 @@ def register_hook(settings):
         "hooks": [{
             "type": "command",
             "command": HOOK_CMD,
-            "statusMessage": "启动 RAG 服务...",
+            "statusMessage": _t("status_msg"),
             "async": True
         }]
     })
@@ -81,15 +117,15 @@ def copy_commands():
             src = os.path.join(COMMANDS_SRC, fname)
             dst = os.path.join(COMMANDS_DST, fname)
             shutil.copy2(src, dst)
-            print(f"  已写入 {dst}")
+            print(_t("cmd_written", dst=dst))
 
 
 if __name__ == "__main__":
-    print("[3/5] 注册 /rag 命令...")
+    print(_t("step_commands"))
     copy_commands()
 
-    print("[4/5] 配置 Claude Code 自动启动 Hook...")
+    print(_t("step_hook"))
     settings = load_settings()
     settings = register_hook(settings)
     save_settings(settings)
-    print(f"  已写入 SessionStart hook → {SETTINGS_PATH}")
+    print(_t("hook_written", path=SETTINGS_PATH))

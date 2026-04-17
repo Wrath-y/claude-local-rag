@@ -33,16 +33,61 @@ TEXTS_PATH = os.path.join(_dir, config["storage"]["texts_path"])
 DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
+LOG_LANG = config.get("log", {}).get("lang", "zh")
+
+# ================= I18N =================
+_MSGS: dict = {
+    "zh": {
+        "model_loading":           "[1/3] 加载 embedding 模型：{name} ...",
+        "model_loaded":            "[1/3] 模型加载完成，向量维度：{dim}",
+        "store_loaded":            "[2/3] 向量库加载完成，已有 {n} 个 chunk",
+        "store_empty":             "[2/3] 向量库初始化（空库）",
+        "service_ready":           "[3/3] 服务就绪，监听 http://127.0.0.1:{port}",
+        "retrieve_query":          "[retrieve] 查询: {q}",
+        "retrieve_empty_store":    "[retrieve] 向量库为空，返回空结果",
+        "retrieve_dynamic_top_k":  "[retrieve] dynamic_top_k={k}（已用≈{used} tokens，剩余≈{remaining} tokens）",
+        "retrieve_faiss":          "[retrieve] FAISS 返回 {k} 个候选（库总量 {n}）",
+        "retrieve_threshold":      "[retrieve] 阈值过滤（< {t}）丢弃 {d} 个，剩余 {r} 个",
+        "retrieve_rerank_header":  "[retrieve] rerank 后顺序:",
+        "retrieve_final":          "[retrieve] 最终返回 {n} 个 chunks",
+        "rerank_loading":          "[rerank] 首次开启，加载模型：{model} ...",
+        "rerank_loaded":           "[rerank] 模型加载完成",
+    },
+    "en": {
+        "model_loading":           "[1/3] Loading embedding model: {name} ...",
+        "model_loaded":            "[1/3] Model loaded, embedding dim: {dim}",
+        "store_loaded":            "[2/3] Vector store loaded, {n} chunks",
+        "store_empty":             "[2/3] Vector store initialized (empty)",
+        "service_ready":           "[3/3] Service ready at http://127.0.0.1:{port}",
+        "retrieve_query":          "[retrieve] query: {q}",
+        "retrieve_empty_store":    "[retrieve] store is empty, returning no results",
+        "retrieve_dynamic_top_k":  "[retrieve] dynamic_top_k={k} (used≈{used} tokens, remaining≈{remaining} tokens)",
+        "retrieve_faiss":          "[retrieve] FAISS returned {k} candidates (total: {n})",
+        "retrieve_threshold":      "[retrieve] threshold filter (< {t}) discarded {d}, remaining {r}",
+        "retrieve_rerank_header":  "[retrieve] after rerank:",
+        "retrieve_final":          "[retrieve] returning {n} chunks",
+        "rerank_loading":          "[rerank] First enable — loading model: {model} ...",
+        "rerank_loaded":           "[rerank] Model loaded",
+    },
+}
+
+
+def _t(key: str, **kwargs) -> str:
+    lang = LOG_LANG if LOG_LANG in _MSGS else "zh"
+    template = _MSGS[lang].get(key, key)
+    return template.format(**kwargs) if kwargs else template
+
+
 SCORE_THRESHOLD = 0.45
 # 固定 2 句，行为稳定可预期。
 OVERLAP_SENTENCES = 2
 RERANK_MODEL_NAME = config["rerank"]["model"]
 
 # ================= MODEL =================
-print(f"[1/3] 加载 embedding 模型：{MODEL_NAME} ...")
+print(_t("model_loading", name=MODEL_NAME))
 model = SentenceTransformer(MODEL_NAME)
 DIM = model.get_embedding_dimension()
-print(f"[1/3] 模型加载完成，向量维度：{DIM}")
+print(_t("model_loaded", dim=DIM))
 
 # rerank 模型：lazy 加载，首次开启时初始化
 rerank_enabled: bool = config["rerank"]["enabled"]
@@ -108,12 +153,12 @@ def load_store():
             vec = np.zeros(DIM, dtype=np.float32)
             index.reconstruct(i, vec)
             _emb_cache[chunk["text"]] = vec
-        print(f"[2/3] 向量库加载完成，已有 {len(stored_chunks)} 个 chunk")
+        print(_t("store_loaded", n=len(stored_chunks)))
     else:
         index = faiss.IndexFlatIP(DIM)
         stored_chunks = []
         chunk_set = set()
-        print("[2/3] 向量库初始化（空库）")
+        print(_t("store_empty"))
     rebuild_bm25()
 
 
@@ -178,7 +223,7 @@ def _bigrams(s: str) -> List[str]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     load_store()
-    print(f"[3/3] 服务就绪，监听 http://127.0.0.1:{config['server']['port']}")
+    print(_t("service_ready", port=config['server']['port']))
     yield
     global reranker
     if reranker is not None:
@@ -243,10 +288,10 @@ def retrieve(req: RetrieveRequest):
             print(msg)
 
     q_short = req.text[:60] + ("..." if len(req.text) > 60 else "")
-    log(f"[retrieve] 查询: {q_short!r}")
+    log(_t("retrieve_query", q=q_short))
 
     if index.ntotal == 0:
-        log("[retrieve] 向量库为空，返回空结果")
+        log(_t("retrieve_empty_store"))
         return RetrieveResponse(chunks=[])
 
     # 动态 top_k：根据已用 token 数计算剩余空间，避免 RAG 结果撑爆上下文窗口
@@ -254,7 +299,7 @@ def retrieve(req: RetrieveRequest):
         remaining = CONTEXT_WINDOW - req.context_tokens_used - RESPONSE_RESERVE
         chunk_budget = remaining // AVG_CHUNK_TOKENS
         dynamic_top_k = max(1, min(TOP_K, chunk_budget))
-        log(f"[retrieve] dynamic_top_k={dynamic_top_k}（已用≈{req.context_tokens_used} tokens，剩余≈{remaining} tokens）")
+        log(_t("retrieve_dynamic_top_k", k=dynamic_top_k, used=req.context_tokens_used, remaining=remaining))
     else:
         dynamic_top_k = TOP_K
 
@@ -264,7 +309,7 @@ def retrieve(req: RetrieveRequest):
 
     k = min(dynamic_top_k * 3, index.ntotal)
     scores, indices = index.search(embedding, k)
-    log(f"[retrieve] FAISS 返回 {k} 个候选（库总量 {index.ntotal}）")
+    log(_t("retrieve_faiss", k=k, n=index.ntotal))
 
     # 先过滤无效候选，再批量计算 BM25（避免逐条调用，性能更好）
     valid_indices: List[int] = []
@@ -279,7 +324,7 @@ def retrieve(req: RetrieveRequest):
         valid_indices.append(int(i))
         valid_vec_scores.append(float(score))
 
-    log(f"[retrieve] 阈值过滤（< {SCORE_THRESHOLD}）丢弃 {dropped_threshold} 个，剩余 {len(valid_indices)} 个")
+    log(_t("retrieve_threshold", t=SCORE_THRESHOLD, d=dropped_threshold, r=len(valid_indices)))
 
     # BM25 批量评分，归一化到 [0, 1]
     if bm25 is not None and valid_indices:
@@ -309,13 +354,13 @@ def retrieve(req: RetrieveRequest):
         pairs = [(req.text, c["text"]) for _, c, _, _ in top_candidates]
         rerank_scores = reranker.predict(pairs, num_workers=0)
         reranked = sorted(zip(rerank_scores, top_candidates), key=lambda x: x[0], reverse=True)
-        log("[retrieve] rerank 后顺序:")
+        log(_t("retrieve_rerank_header"))
         for rs, (_, chunk, _, _) in reranked:
             preview = chunk["text"][:40].replace("\n", " ")
             log(f"  rerank={rs:.3f} {preview!r}")
         top_candidates = [t for _, t in reranked]
 
-    log(f"[retrieve] 最终返回 {len(top_candidates)} 个 chunks")
+    log(_t("retrieve_final", n=len(top_candidates)))
 
     _stats["total_queries"] += 1
     if not top_candidates:
@@ -335,9 +380,9 @@ def rerank_toggle(enabled: bool):
     global rerank_enabled, reranker
     rerank_enabled = enabled
     if enabled and reranker is None:
-        print(f"[rerank] 首次开启，加载模型：{RERANK_MODEL_NAME} ...")
+        print(_t("rerank_loading", model=RERANK_MODEL_NAME))
         reranker = CrossEncoder(RERANK_MODEL_NAME)
-        print("[rerank] 模型加载完成")
+        print(_t("rerank_loaded"))
     return {"rerank_enabled": rerank_enabled}
 
 

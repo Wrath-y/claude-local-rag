@@ -2,17 +2,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETTINGS="$HOME/.claude/settings.json"
-COMMANDS_DIR="$HOME/.claude/commands"
 
 echo "[1/5] 检查依赖..."
 
 if ! command -v python3 &>/dev/null; then
   echo "错误：未找到 python3，请先安装 Python 3.8+" && exit 1
-fi
-
-if ! command -v jq &>/dev/null; then
-  echo "错误：未找到 jq，请先安装：brew install jq" && exit 1
 fi
 
 if ! command -v node &>/dev/null; then
@@ -35,47 +29,7 @@ else
   echo "  lark-cli 已安装"
 fi
 
-echo "[3/5] 注册 /rag 命令..."
-
-mkdir -p "$COMMANDS_DIR"
-for f in "$SCRIPT_DIR/.claude/commands"/rag*.md; do
-  cp "$f" "$COMMANDS_DIR/$(basename "$f")"
-  echo "  已写入 $COMMANDS_DIR/$(basename "$f")"
-done
-
-echo "[4/5] 配置 Claude Code 自动启动 Hook..."
-mkdir -p "$HOME/.claude"
-
-# 若配置文件不存在则创建空 JSON
-if [ ! -f "$SETTINGS" ]; then
-  echo "{}" > "$SETTINGS"
-fi
-
-HOOK_CMD="curl -s http://127.0.0.1:8765/health > /dev/null 2>&1 || (cd $SCRIPT_DIR && nohup uvicorn server:app --port 8765 >> /tmp/claude-local-rag.log 2>&1 &)"
-
-# 幂等写入：先删除已有的 claude-local-rag hook，再追加，避免重复
-UPDATED=$(jq \
-  --arg cmd "$HOOK_CMD" \
-  '
-  # 移除已有的 claude-local-rag hook（通过 command 内容匹配）
-  .hooks.SessionStart //= [] |
-  .hooks.SessionStart |= map(
-    .hooks |= map(select(.command | test("claude-local-rag") | not))
-  ) |
-  .hooks.SessionStart |= map(select(.hooks | length > 0)) |
-  # 追加新 hook
-  .hooks.SessionStart += [{
-    "hooks": [{
-      "type": "command",
-      "command": $cmd,
-      "statusMessage": "启动 RAG 服务...",
-      "async": true
-    }]
-  }]
-  ' "$SETTINGS")
-
-echo "$UPDATED" > "$SETTINGS"
-echo "  已写入 SessionStart hook → $SETTINGS"
+python3 "$SCRIPT_DIR/setup_hook.py"
 
 echo "[5/5] 启动 RAG 服务（首次）..."
 if curl -s http://127.0.0.1:8765/health > /dev/null 2>&1; then
@@ -93,7 +47,6 @@ else
       echo "  服务启动成功（${ELAPSED}s）→ http://127.0.0.1:8765"
       break
     fi
-    # 检查进程是否意外退出
     if ! kill -0 $SERVER_PID 2>/dev/null; then
       echo "  服务进程已退出，请查看日志：tail -f /tmp/claude-local-rag.log"
       exit 1

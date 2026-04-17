@@ -15,11 +15,19 @@ hook 的行为规则：
 切换方式：写入或删除 `.claude/rag_auto_index` 标志文件：
 
 ```bash
-# on
+# on（macOS / Linux）
 touch .claude/rag_auto_index
 
-# off
+# off（macOS / Linux）
 rm -f .claude/rag_auto_index
+```
+
+```python
+# on（跨平台 Python）
+open('.claude/rag_auto_index', 'w').close()
+
+# off（跨平台 Python）
+import os; os.path.exists('.claude/rag_auto_index') and os.remove('.claude/rag_auto_index')
 ```
 
 告知用户当前模式已切换为 on 或 off。

@@ -325,6 +325,31 @@ Edit `config.yaml` to tune parameters:
 | `retrieve.verbose` | `true` | Enable retrieval logs |
 | `rerank.enabled` | `false` | Enable rerank by default |
 | `rerank.model` | `BAAI/bge-reranker-base` | Rerank model |
+| `model.name` | `BAAI/bge-small-zh-v1.5` | Embedding Model |
+| `embedding.doc_prefix` | `段落：` | Prefix prepended to text at ingestion time (BGE-specific) |
+| `embedding.query_prefix` | `查询：` | Prefix prepended to query at retrieval time (BGE-specific) |
+
+### Switching the Embedding Model
+
+`model.name` accepts any `sentence-transformers`-compatible model. Edit `config.yaml` and restart the service to apply. **You must run `/rag-reset` before switching models** — different models produce incompatible vector spaces, so searching a new model's index with old vectors will return garbage results.
+
+`doc_prefix` / `query_prefix` are BGE-specific prefixes. When switching to a non-BGE model, clear both:
+
+```yaml
+embedding:
+  doc_prefix: ""
+  query_prefix: ""
+```
+
+Common alternatives:
+
+| Model | Dim | Language | Notes |
+|-------|-----|----------|-------|
+| `BAAI/bge-small-zh-v1.5` (default) | 512 | Chinese | Small, fast |
+| `BAAI/bge-base-zh-v1.5` | 768 | Chinese | Higher accuracy, larger |
+| `BAAI/bge-small-en-v1.5` | 512 | English | Best for English docs |
+| `BAAI/bge-m3` | 1024 | Multilingual | Best for mixed Chinese/English, slower |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | English | Generic English; clear both prefixes |
 
 ### Why Is `top_k` 3 by Default?
 

@@ -325,6 +325,31 @@ type %TEMP%\claude-local-rag.log             # 查看运行日志
 | `retrieve.verbose` | `true` | 是否输出检索日志 |
 | `rerank.enabled` | `false` | 是否默认开启 rerank |
 | `rerank.model` | `BAAI/bge-reranker-base` | rerank 模型 |
+| `model.name` | `BAAI/bge-small-zh-v1.5` | 向量模型 |
+| `embedding.doc_prefix` | `段落：` | 入库时加在文本前的前缀（BGE 模型专用） |
+| `embedding.query_prefix` | `查询：` | 检索时加在查询前的前缀（BGE 模型专用） |
+
+### 更换向量模型
+
+`model.name` 支持任意 `sentence-transformers` 兼容模型，直接修改 `config.yaml` 并重启服务即可生效。**切换模型前必须执行 `/rag-reset`**，因为不同模型的向量空间不兼容，用旧向量检索新模型会产生错误结果。
+
+`doc_prefix` / `query_prefix` 是 BGE 系列模型的专用前缀，换用非 BGE 模型时需将两者清空：
+
+```yaml
+embedding:
+  doc_prefix: ""
+  query_prefix: ""
+```
+
+常用可替换选项：
+
+| 模型 | 维度 | 语言 | 特点 |
+|------|------|------|------|
+| `BAAI/bge-small-zh-v1.5`（默认） | 512 | 中文 | 体积小，速度快 |
+| `BAAI/bge-base-zh-v1.5` | 768 | 中文 | 精度更高，模型更大 |
+| `BAAI/bge-small-en-v1.5` | 512 | 英文 | 英文文档首选 |
+| `BAAI/bge-m3` | 1024 | 多语言 | 中英混合文档首选，速度较慢 |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | 英文 | 通用英文，非 BGE，prefix 需清空 |
 
 ### 为什么 top_k 默认是 3？
 

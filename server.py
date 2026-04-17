@@ -49,6 +49,7 @@ rerank_enabled: bool = config["rerank"]["enabled"]
 reranker: CrossEncoder = None
 
 verbose_enabled: bool = config["retrieve"].get("verbose", True)
+dynamic_top_k_enabled: bool = config["retrieve"].get("dynamic_top_k", False)
 
 index: faiss.IndexFlatIP = None
 stored_chunks: List[Dict] = []
@@ -249,7 +250,7 @@ def retrieve(req: RetrieveRequest):
         return RetrieveResponse(chunks=[])
 
     # 动态 top_k：根据已用 token 数计算剩余空间，避免 RAG 结果撑爆上下文窗口
-    if req.context_tokens_used > 0:
+    if dynamic_top_k_enabled and req.context_tokens_used > 0:
         remaining = CONTEXT_WINDOW - req.context_tokens_used - RESPONSE_RESERVE
         chunk_budget = remaining // AVG_CHUNK_TOKENS
         dynamic_top_k = max(1, min(TOP_K, chunk_budget))
@@ -346,6 +347,14 @@ def retrieve_verbose(enabled: bool):
     global verbose_enabled
     verbose_enabled = enabled
     return {"verbose_enabled": verbose_enabled}
+
+
+# ================= DYNAMIC TOP_K TOGGLE =================
+@app.post("/retrieve/dynamic-top-k")
+def toggle_dynamic_top_k(enabled: bool):
+    global dynamic_top_k_enabled
+    dynamic_top_k_enabled = enabled
+    return {"dynamic_top_k_enabled": dynamic_top_k_enabled}
 
 
 # ================= HEALTH =================

@@ -12,6 +12,7 @@ chunk:
 retrieve:
   top_k: 3
   verbose: true
+  dynamic_top_k: false     # 根据剩余上下文窗口自动调整 top_k
   context_window: 180000   # 模型上下文窗口 token 数（保守值，预留 system prompt 开销）
   response_reserve: 8000   # 为模型回复预留的 token 数
 

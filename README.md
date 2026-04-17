@@ -173,6 +173,19 @@ When enabled, retrieval results are re-ranked by a cross-encoder for higher rele
 
 ---
 
+### 📐 Dynamic top_k
+
+When enabled, the hook estimates how many tokens are already in the conversation transcript before each retrieval. If the remaining context window cannot fit the full `top_k` chunks, the count is automatically reduced (minimum 1):
+
+```bash
+/rag-dynamic-top-k on    # Enable
+/rag-dynamic-top-k off   # Disable
+```
+
+> Disabled by default. Useful in long sessions or when many tool calls have consumed significant context — prevents RAG results from being truncated. In normal short conversations the behavior is identical to the disabled state.
+
+---
+
 ## Command Reference
 
 | Command | Description | Extra Tokens |
@@ -183,6 +196,7 @@ When enabled, retrieval results are re-ranked by a cross-encoder for higher rele
 | `/rag-mode on/off` | Auto-retrieve mode | ✓ When on |
 | `/rag-auto-index on/off` | Auto-index code files | — |
 | `/rag-rerank on/off` | Cross-encoder rerank | — |
+| `/rag-dynamic-top-k on/off` | Dynamic top_k (auto-reduce chunk count when context is nearly full) | — |
 | `/rag-verbose on/off` | Retrieval observability logs | — |
 | `/rag-status` | Service status + chunk count + hit rate | — |
 | `/rag-sources` | All sources with chunk counts | — |
@@ -323,6 +337,9 @@ Edit `config.yaml` to tune parameters:
 | `chunk.max_tokens` | `400` | Maximum tokens per chunk |
 | `retrieve.top_k` | `3` | Number of chunks returned per retrieval |
 | `retrieve.verbose` | `true` | Enable retrieval logs |
+| `retrieve.dynamic_top_k` | `false` | Enable dynamic top_k |
+| `retrieve.context_window` | `180000` | Model context window size (tokens) |
+| `retrieve.response_reserve` | `8000` | Tokens reserved for model response |
 | `rerank.enabled` | `false` | Enable rerank by default |
 | `rerank.model` | `BAAI/bge-reranker-base` | Rerank model |
 | `model.name` | `BAAI/bge-small-zh-v1.5` | Embedding Model |

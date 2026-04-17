@@ -173,6 +173,19 @@ start.bat
 
 ---
 
+### 📐 动态 top_k
+
+开启后，每次检索时自动读取当前对话 transcript 估算已用 token 数，当剩余窗口不足以容纳 `top_k` 个 chunk 时，自动向下调整返回数量（最低 1）：
+
+```bash
+/rag-dynamic-top-k on    # 开启
+/rag-dynamic-top-k off   # 关闭
+```
+
+> 默认关闭。长对话或大量工具调用后，上下文可能接近上限，此时开启可防止检索结果被截断。正常对话中与关闭效果相同。
+
+---
+
 ## 命令汇总
 
 | 命令 | 说明 | 额外 Token |
@@ -183,6 +196,7 @@ start.bat
 | `/rag-mode on/off` | 自动检索模式 | ✓ 开启时 |
 | `/rag-auto-index on/off` | 代码自动入库 | — |
 | `/rag-rerank on/off` | rerank 精排 | — |
+| `/rag-dynamic-top-k on/off` | 动态 top_k（上下文接近上限时自动缩减返回数量） | — |
 | `/rag-verbose on/off` | 检索可观测性日志 | — |
 | `/rag-status` | 服务状态 + chunk 总数 + 检索命中率统计 | — |
 | `/rag-sources` | 列出所有来源及各来源 chunk 数 | — |
@@ -323,13 +337,16 @@ type %TEMP%\claude-local-rag.log             # 查看运行日志
 | `chunk.max_tokens` | `400` | 每段最大长度 |
 | `retrieve.top_k` | `3` | 检索返回的段落数 |
 | `retrieve.verbose` | `true` | 是否输出检索日志 |
+| `retrieve.dynamic_top_k` | `false` | 是否开启动态 top_k |
+| `retrieve.context_window` | `180000` | 模型上下文窗口 token 数 |
+| `retrieve.response_reserve` | `8000` | 为模型回复预留的 token 数 |
 | `rerank.enabled` | `false` | 是否默认开启 rerank |
 | `rerank.model` | `BAAI/bge-reranker-base` | rerank 模型 |
-| `model.name` | `BAAI/bge-small-zh-v1.5` | 向量模型 |
+| `model.name` | `BAAI/bge-small-zh-v1.5` | Embedding 模型 |
 | `embedding.doc_prefix` | `段落：` | 入库时加在文本前的前缀（BGE 模型专用） |
 | `embedding.query_prefix` | `查询：` | 检索时加在查询前的前缀（BGE 模型专用） |
 
-### 更换向量模型
+### 更换Embedding模型
 
 `model.name` 支持任意 `sentence-transformers` 兼容模型，直接修改 `config.yaml` 并重启服务即可生效。**切换模型前必须执行 `/rag-reset`**，因为不同模型的向量空间不兼容，用旧向量检索新模型会产生错误结果。
 

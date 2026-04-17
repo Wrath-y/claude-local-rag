@@ -2,6 +2,32 @@ import sys, json, os, re, requests
 
 data = json.load(sys.stdin)
 prompt = data.get('prompt', '')
+transcript_path = data.get('transcript_path', '')
+
+
+def estimate_context_tokens(path: str) -> int:
+    """读取 transcript JSONL，估算当前已占用的上下文 token 数。"""
+    if not path or not os.path.exists(path):
+        return 0
+    try:
+        total_chars = 0
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                try:
+                    msg = json.loads(line)
+                    content = msg.get('content', '')
+                    if isinstance(content, str):
+                        total_chars += len(content)
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict):
+                                total_chars += len(block.get('text', '') or str(block.get('input', '')))
+                except (json.JSONDecodeError, TypeError):
+                    total_chars += len(line)
+        # 中英混合内容约 3 字符/token
+        return total_chars // 3
+    except Exception:
+        return 0
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 # mode on/off 持久化标志文件：存在即为 on，删除即为 off
@@ -41,7 +67,8 @@ if mode_match:
 if rag_mode_on() and prompt.strip():
     try:
         r = requests.post('http://127.0.0.1:8765/retrieve',
-                          json={'text': prompt}, timeout=5)
+                          json={'text': prompt, 'context_tokens_used': estimate_context_tokens(transcript_path)},
+                          timeout=5)
         chunks = r.json().get('chunks', [])
         if chunks:
             joined = '\n---\n'.join(chunks)

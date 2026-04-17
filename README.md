@@ -12,7 +12,7 @@
 
 [Installation](#installation) · [Usage](#usage) · [How It Works](#how-it-works-how-the-prompt-is-modified) · [Command Reference](#command-reference) · [FAQ](#faq)
 
-📖 [中文文档](README.zh-ch.md)
+📖 [中文文档](README_zh.md)
 
 </div>
 
@@ -407,7 +407,7 @@ claude-local-rag/
 - [x] Cross-Encoder Rerank
 - [ ] Chunk head/tail overlap — prevent semantic truncation at boundaries
 - [ ] Semantic chunking (split on paragraph/topic boundaries instead of sentence boundaries)
-- [ ] Dynamic top_k (auto-adjust based on remaining context window)
+- [x] Dynamic top_k (auto-adjust based on remaining context window)
 
 **Knowledge Base Management**
 

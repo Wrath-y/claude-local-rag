@@ -25,6 +25,9 @@ MODEL_NAME = config["model"]["name"]
 CHUNK_MIN = config["chunk"]["min_tokens"]
 CHUNK_MAX = config["chunk"]["max_tokens"]
 TOP_K = config["retrieve"]["top_k"]
+CONTEXT_WINDOW = config["retrieve"].get("context_window", 180000)
+RESPONSE_RESERVE = config["retrieve"].get("response_reserve", 8000)
+AVG_CHUNK_TOKENS = (CHUNK_MIN + CHUNK_MAX) // 2  # 每个 chunk 的平均 token 数估算
 INDEX_PATH = os.path.join(_dir, config["storage"]["index_path"])
 TEXTS_PATH = os.path.join(_dir, config["storage"]["texts_path"])
 DOC_PREFIX = config["embedding"]["doc_prefix"]
@@ -196,6 +199,7 @@ class IngestRequest(BaseModel):
 
 class RetrieveRequest(BaseModel):
     text: str
+    context_tokens_used: int = 0  # 由 hook 传入，用于动态调整 top_k
 
 
 class RetrieveResponse(BaseModel):
@@ -244,11 +248,20 @@ def retrieve(req: RetrieveRequest):
         log("[retrieve] 向量库为空，返回空结果")
         return RetrieveResponse(chunks=[])
 
+    # 动态 top_k：根据已用 token 数计算剩余空间，避免 RAG 结果撑爆上下文窗口
+    if req.context_tokens_used > 0:
+        remaining = CONTEXT_WINDOW - req.context_tokens_used - RESPONSE_RESERVE
+        chunk_budget = remaining // AVG_CHUNK_TOKENS
+        dynamic_top_k = max(1, min(TOP_K, chunk_budget))
+        log(f"[retrieve] dynamic_top_k={dynamic_top_k}（已用≈{req.context_tokens_used} tokens，剩余≈{remaining} tokens）")
+    else:
+        dynamic_top_k = TOP_K
+
     query = f"{QUERY_PREFIX}{req.text}"
     embedding = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
     embedding = np.array(embedding, dtype=np.float32)
 
-    k = min(TOP_K * 3, index.ntotal)
+    k = min(dynamic_top_k * 3, index.ntotal)
     scores, indices = index.search(embedding, k)
     log(f"[retrieve] FAISS 返回 {k} 个候选（库总量 {index.ntotal}）")
 
@@ -284,7 +297,7 @@ def retrieve(req: RetrieveRequest):
         candidates.append((final_score, chunk, vec_score, kw))
 
     candidates.sort(key=lambda x: x[0], reverse=True)
-    top_candidates = candidates[:TOP_K]
+    top_candidates = candidates[:dynamic_top_k]
 
     for final_score, chunk, vec_score, kw in top_candidates:
         src = chunk.get("source", "unknown")

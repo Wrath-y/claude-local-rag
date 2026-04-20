@@ -493,6 +493,16 @@ tail -f /tmp/claude-local-rag.log
 </details>
 
 <details>
+<summary><b>Q：重复对同一个文件执行 /rag，会重新 embedding 吗？</b></summary>
+
+不会。每次入库时服务会对来源内容计算 MD5，再次执行 `/rag` 时若内容未变更，直接跳过，零embedding调用。
+
+只有 `/rag-update` 会强制全量重建，因为它是明确的"替换"操作，与内容是否变更无关。
+
+**为什么不做 chunk 级复用**（对未变更段落直接复用向量，只对修改部分重新 embedding）？对本项目没有必要：本地 BGE 模型 embedding 免费且只需几百毫秒，chunk 级 diff 带来的复杂度远大于收益。只有切换到按 token 计费的付费 embedding API 时，这个优化才值得引入。
+</details>
+
+<details>
 <summary><b>Q：为什么不支持 Query Rewriting（查询改写）？</b></summary>
 
 Query Rewriting 通过 LLM 将用户问题改写为更适合检索的形式来提升召回率，是常见的 RAG 增强手段。本项目**有意不引入**，原因如下：

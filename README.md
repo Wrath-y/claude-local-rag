@@ -493,6 +493,16 @@ Yes. `/clear` only clears the conversation context — it does not affect the ve
 </details>
 
 <details>
+<summary><b>Q: Will /rag re-embed a file I've already ingested?</b></summary>
+
+No. Each source is fingerprinted with an MD5 hash on ingest. If you run `/rag` on the same file again without changing its content, the service detects the match and skips immediately — zero embedding calls.
+
+Only `/rag-update` forces a full rebuild, because it is an explicit "replace" operation regardless of content.
+
+**Why not skip at the chunk level** (reuse vectors for unchanged paragraphs, re-embed only modified ones)? The added complexity isn't worth it here: this project uses a local BGE model where re-embedding is free and takes milliseconds. Chunk-level diffing only pays off when embedding is billed per token (e.g. a paid API). If you switch to one, that would be the right time to add it.
+</details>
+
+<details>
 <summary><b>Q: Why no Query Rewriting?</b></summary>
 
 Query Rewriting uses an LLM to rewrite the user's question into a form better suited for retrieval. It's a common RAG enhancement technique. This project **intentionally omits it** for three reasons:

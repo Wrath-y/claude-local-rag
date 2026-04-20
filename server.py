@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import pickle
@@ -52,6 +53,7 @@ _MSGS: dict = {
         "retrieve_final":          "[retrieve] 最终返回 {n} 个 chunks",
         "rerank_loading":          "[rerank] 首次开启，加载模型：{model} ...",
         "rerank_loaded":           "[rerank] 模型加载完成",
+        "ingest_skip":             "[ingest] 来源 '{source}' 内容未变更，跳过入库",
     },
     "en": {
         "model_loading":           "[1/3] Loading embedding model: {name} ...",
@@ -68,6 +70,7 @@ _MSGS: dict = {
         "retrieve_final":          "[retrieve] returning {n} chunks",
         "rerank_loading":          "[rerank] First enable — loading model: {model} ...",
         "rerank_loaded":           "[rerank] Model loaded",
+        "ingest_skip":             "[ingest] source '{source}' unchanged, skipping ingest",
     },
 }
 
@@ -101,6 +104,7 @@ stored_chunks: List[Dict] = []
 chunk_set: set = set()
 bm25: BM25Okapi = None
 _emb_cache: Dict[str, np.ndarray] = {}  # text → normalized embedding
+_source_hashes: Dict[str, str] = {}  # source → MD5 of full ingested text (Plan A skip)
 _stats = {"total_queries": 0, "zero_hit_queries": 0, "total_chunks_returned": 0}
 
 # ================= STORAGE =================
@@ -138,6 +142,7 @@ def rebuild_bm25():
 def load_store():
     global index, stored_chunks, chunk_set
     _emb_cache.clear()
+    _source_hashes.clear()
     if os.path.exists(INDEX_PATH) and os.path.exists(TEXTS_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(TEXTS_PATH, "rb") as f:
@@ -153,6 +158,11 @@ def load_store():
             vec = np.zeros(DIM, dtype=np.float32)
             index.reconstruct(i, vec)
             _emb_cache[chunk["text"]] = vec
+        # 重建 source → hash 映射（Plan A 跳过相同内容重复入库）
+        for chunk in stored_chunks:
+            h = chunk.get("source_hash", "")
+            if h:
+                _source_hashes[chunk.get("source", "unknown")] = h
         print(_t("store_loaded", n=len(stored_chunks)))
     else:
         index = faiss.IndexFlatIP(DIM)
@@ -258,12 +268,20 @@ def ingest(req: IngestRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
 
+    # Plan A: 来源级 hash 跳过——内容未变更时直接返回，零嵌入调用
+    content_hash = hashlib.md5(req.text.encode("utf-8")).hexdigest()
+    if req.source in _source_hashes and _source_hashes[req.source] == content_hash:
+        print(_t("ingest_skip", source=req.source))
+        return {"status": "skip", "chunks_added": 0, "reason": "content unchanged"}
+
     chunks = chunk_text(req.text)
     new_chunks = []
     for c in chunks:
         if c not in chunk_set:
             chunk_set.add(c)
-            new_chunks.append({"text": c, "source": req.source})
+            new_chunks.append({"text": c, "source": req.source, "source_hash": content_hash})
+
+    _source_hashes[req.source] = content_hash
 
     if not new_chunks:
         return {"status": "ok", "chunks_added": 0}
@@ -458,6 +476,7 @@ def delete_source(name: str):
     # 清理不再存在于任何来源的缓存条目，避免 rag-update 后缓存持续膨胀
     for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
         del _emb_cache[k]
+    _source_hashes.pop(name, None)
     save_store()
     rebuild_bm25()
     return {"status": "ok", "removed_chunks": removed}
@@ -471,6 +490,7 @@ def reset():
     stored_chunks = []
     chunk_set = set()
     _emb_cache.clear()
+    _source_hashes.clear()
     rebuild_bm25()
     for p in [INDEX_PATH, TEXTS_PATH]:
         if os.path.exists(p):

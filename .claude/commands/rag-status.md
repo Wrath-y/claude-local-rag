@@ -20,10 +20,12 @@ curl -s -w "\n__HTTP_CODE__:%{http_code}" http://127.0.0.1:8765/storage/integrit
 
 根据 HTTP 状态码展示：
 
-- `200` + `regenerated=false`：存储一致，展示 `committed_at`（最近一次成功提交时间）与 chunk/index 摘要
+- `200` + `regenerated=false`：存储一致，展示 `committed_at`（最近一次成功提交时间）、chunk/index 摘要、`wal.committed_offset` 与 `wal.committed_seq`
 - `200` + `regenerated=true`：manifest 缺失已自动补齐，提示这是正常现象
 - `409`：存储不一致，展示 `mismatches` 字段列表，建议用户检查是否外部文件被篡改
 - `503`：chunks.pkl / index.bin 缺失或无法读取，提示可能损坏
+
+若 `/health` 返回体的 `wal_replaying=true`，额外提示「WAL replay 进行中，稍后再查」；若 `wal_readonly_reason` 非 null，以红色/警告样式展示原因并建议检查 `storage/wal.jsonl` 末尾。
 
 将三个接口的结果合并展示，包含：
 - 服务状态（running / 未启动）

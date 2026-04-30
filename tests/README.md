@@ -15,6 +15,12 @@ tests/
 │   ├── test_integrity_endpoint.py
 │   ├── test_concurrent_writes.py
 │   └── test_crash_smoke.py
+├── wal-crash-recovery/
+│   ├── test_wal_unit.py
+│   ├── test_wal_append_integration.py
+│   ├── test_wal_replay.py
+│   ├── test_wal_readonly.py
+│   └── test_wal_checkpoint.py
 └── <next-change>/                    # Future changes follow the same pattern
     └── test_*.py
 ```
@@ -58,6 +64,12 @@ tests/
 │   ├── test_integrity_endpoint.py
 │   ├── test_concurrent_writes.py
 │   └── test_crash_smoke.py
+├── wal-crash-recovery/
+│   ├── test_wal_unit.py
+│   ├── test_wal_append_integration.py
+│   ├── test_wal_replay.py
+│   ├── test_wal_readonly.py
+│   └── test_wal_checkpoint.py
 └── <next-change>/                    # 后续 change 按此模式新建子目录
     └── test_*.py
 ```

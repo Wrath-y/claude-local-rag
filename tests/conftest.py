@@ -32,18 +32,23 @@ def isolated_store(tmp_path, monkeypatch):
     index_path = tmp_path / "index.bin"
     texts_path = tmp_path / "chunks.pkl"
     manifest_path = storage_dir / "manifest.json"
+    wal_path = storage_dir / "wal.jsonl"
 
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "STORAGE_DIR", str(storage_dir))
     monkeypatch.setattr(server, "INDEX_PATH", str(index_path))
     monkeypatch.setattr(server, "TEXTS_PATH", str(texts_path))
     monkeypatch.setattr(server, "MANIFEST_PATH", str(manifest_path))
+    monkeypatch.setattr(server, "WAL_PATH", str(wal_path))
 
     # Reset in-memory globals to clean slate
     import faiss
     monkeypatch.setattr(server, "index", faiss.IndexFlatIP(server.DIM))
     monkeypatch.setattr(server, "stored_chunks", [])
     monkeypatch.setattr(server, "chunk_set", set())
+    monkeypatch.setattr(server, "_wal_replaying", False)
+    monkeypatch.setattr(server, "_wal_readonly_reason", None)
+    monkeypatch.setattr(server, "_wal_next_seq", 0)
     server._emb_cache.clear()
     server._source_hashes.clear()
     server.rebuild_bm25()
@@ -55,6 +60,7 @@ def isolated_store(tmp_path, monkeypatch):
         "index_path": index_path,
         "texts_path": texts_path,
         "manifest_path": manifest_path,
+        "wal_path": wal_path,
     }
 
 

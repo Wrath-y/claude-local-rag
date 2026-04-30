@@ -15,7 +15,7 @@ import json
 import os
 import threading
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterator, List, Optional
 
@@ -153,11 +153,22 @@ class IndexSummary:
 
 
 @dataclass
+class WALSummary:
+    path: str = "wal.jsonl"
+    committed_offset: int = 0
+    committed_seq: int = 0
+
+
+DEFAULT_WAL_SUMMARY = WALSummary()
+
+
+@dataclass
 class ManifestV1:
     version: int
     committed_at: str
     chunks: ChunksSummary
     index: IndexSummary
+    wal: WALSummary = field(default_factory=WALSummary)
 
     def to_dict(self) -> dict:
         return {
@@ -165,6 +176,7 @@ class ManifestV1:
             "committed_at": self.committed_at,
             "chunks": asdict(self.chunks),
             "index": asdict(self.index),
+            "wal": asdict(self.wal),
         }
 
 
@@ -186,11 +198,26 @@ def read_manifest(path: str) -> Optional[ManifestV1]:
         print(f"[storage] manifest version mismatch at {path}: {raw.get('version')!r}")
         return None
     try:
+        wal_raw = raw.get("wal")
+        if isinstance(wal_raw, dict):
+            wal_summary = WALSummary(
+                path=wal_raw.get("path", DEFAULT_WAL_SUMMARY.path),
+                committed_offset=int(wal_raw.get("committed_offset", 0)),
+                committed_seq=int(wal_raw.get("committed_seq", 0)),
+            )
+        else:
+            # Backward compat: pre-WAL manifests lack this field entirely.
+            wal_summary = WALSummary(
+                path=DEFAULT_WAL_SUMMARY.path,
+                committed_offset=DEFAULT_WAL_SUMMARY.committed_offset,
+                committed_seq=DEFAULT_WAL_SUMMARY.committed_seq,
+            )
         return ManifestV1(
             version=raw["version"],
             committed_at=raw["committed_at"],
             chunks=ChunksSummary(**raw["chunks"]),
             index=IndexSummary(**raw["index"]),
+            wal=wal_summary,
         )
     except (KeyError, TypeError) as e:
         print(f"[storage] manifest schema invalid at {path}: {e}")
@@ -207,6 +234,9 @@ def build_manifest_from_files(
     index_path: str,
     chunks_count: int,
     index_obj: Any,
+    wal_path: str = "wal.jsonl",
+    wal_committed_offset: int = 0,
+    wal_committed_seq: int = 0,
 ) -> ManifestV1:
     """Construct a manifest matching the current on-disk files and in-memory index."""
     return ManifestV1(
@@ -222,6 +252,11 @@ def build_manifest_from_files(
             dim=index_obj.d,
             ntotal=index_obj.ntotal,
             sha256=sha256_of_file(index_path),
+        ),
+        wal=WALSummary(
+            path=os.path.basename(wal_path),
+            committed_offset=wal_committed_offset,
+            committed_seq=wal_committed_seq,
         ),
     )
 
@@ -242,10 +277,12 @@ def verify_manifest(
     chunks_count: int,
     index_path: str,
     index_obj: Any,
+    wal_path: Optional[str] = None,
 ) -> List[Mismatch]:
     """Compare manifest fields against the live chunks/index state.
 
     Returns a list of mismatches; empty list means fully consistent.
+    If `wal_path` is provided, also verifies committed_offset <= actual WAL file size.
     """
     mismatches: List[Mismatch] = []
 
@@ -262,5 +299,12 @@ def verify_manifest(
     actual_index_sha = sha256_of_file(index_path)
     if manifest.index.sha256 != actual_index_sha:
         mismatches.append(Mismatch("index.sha256", manifest.index.sha256, actual_index_sha))
+
+    if wal_path is not None:
+        actual_wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+        if manifest.wal.committed_offset > actual_wal_size:
+            mismatches.append(
+                Mismatch("wal.committed_offset", manifest.wal.committed_offset, actual_wal_size)
+            )
 
     return mismatches

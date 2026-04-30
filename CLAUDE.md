@@ -189,6 +189,14 @@ curl http://127.0.0.1:8765/storage/integrity-check
 
 `/rag-status` 会自动汇总这条信息。
 
+#### 崩溃恢复（WAL）
+
+每次 `ingest` / `delete-source` / `reset` 在真正落盘前先向 `storage/wal.jsonl` append 一条 JSONL 记录（带 CRC32）。服务重启时若 WAL 尾部有未提交（manifest.wal.committed_offset 落后）的记录，自动 replay 到一致状态再继续启动。
+
+- 超过 `storage.wal.max_size_mb`（默认 10MB）自动 checkpoint 截断。
+- WAL 损坏（CRC 不匹配 / JSON 破损）不静默跳过：服务进入只读降级（`/retrieve` 正常、写端点返回 503），`_wal_readonly_reason` 会在 `/health` 体现。
+- `storage.wal.enabled=false` 回退到无 replay 行为，适合灰度或诊断。
+
 ### 真实场景示例
 
 团队将内部 API 文档、接口规范、上线 checklist 存入向量库，开启 `rag-mode on`。

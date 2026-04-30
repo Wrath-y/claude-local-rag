@@ -14,9 +14,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import storage
+import wal as wal_mod
 
 # ================= CONFIG =================
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +37,11 @@ TEXTS_PATH = os.path.join(_dir, config["storage"]["texts_path"])
 DATA_DIR = _dir
 STORAGE_DIR = os.path.join(_dir, "storage")
 MANIFEST_PATH = storage.manifest_path_for(STORAGE_DIR)
+WAL_PATH = wal_mod.wal_path_for(STORAGE_DIR)
+
+_wal_cfg = config["storage"].get("wal", {})
+WAL_ENABLED: bool = bool(_wal_cfg.get("enabled", True))
+WAL_MAX_SIZE_BYTES: int = int(float(_wal_cfg.get("max_size_mb", 10)) * 1024 * 1024)
 DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
@@ -112,6 +118,11 @@ _emb_cache: Dict[str, np.ndarray] = {}  # text → normalized embedding
 _source_hashes: Dict[str, str] = {}  # source → MD5 of full ingested text (Plan A skip)
 _stats = {"total_queries": 0, "zero_hit_queries": 0, "total_chunks_returned": 0}
 
+# WAL runtime state (module-scoped, guarded by storage write lock for writes)
+_wal_replaying: bool = False
+_wal_readonly_reason: "Optional[str]" = None  # type: ignore[name-defined]
+_wal_next_seq: int = 0  # incremented on every append
+
 # ================= STORAGE =================
 def encode_with_cache(texts: List[str]) -> np.ndarray:
     """Encode texts with DOC_PREFIX, returning cache hits instantly and batching misses."""
@@ -144,8 +155,79 @@ def rebuild_bm25():
         bm25 = None
 
 
+def _apply_wal_record(record) -> None:
+    """Re-apply a single WAL record via the internal *_core helpers.
+
+    Caller MUST hold storage.write_lock(). Raises on business failure.
+    """
+    if record.op == "ingest":
+        _ingest_core(record.payload["text"], record.payload.get("source", "unknown"))
+    elif record.op == "delete_source":
+        try:
+            _delete_source_core(record.payload["name"])
+        except HTTPException as e:
+            # Source may have been deleted by a later op or already removed; skip gracefully.
+            if e.status_code == 404:
+                print(f"[wal] replay: delete_source '{record.payload['name']}' already absent, skipping")
+            else:
+                raise
+    elif record.op == "reset":
+        _reset_core()
+    else:
+        raise RuntimeError(f"unknown WAL op: {record.op!r}")
+
+
+def _replay_wal_if_needed(manifest) -> None:
+    """Replay uncommitted WAL entries under the write lock.
+
+    Sets _wal_replaying / _wal_readonly_reason as needed. Truncates WAL on success.
+    """
+    global _wal_replaying, _wal_readonly_reason, _wal_next_seq
+    if not WAL_ENABLED:
+        return
+    if not os.path.exists(WAL_PATH):
+        return
+
+    committed_offset = manifest.wal.committed_offset if manifest is not None else 0
+    wal_size = wal_mod.file_size(WAL_PATH)
+    if wal_size <= committed_offset:
+        # Set _wal_next_seq so future appends continue from the last committed seq
+        if manifest is not None:
+            _wal_next_seq = manifest.wal.committed_seq
+        return
+
+    print(f"[wal] replaying ops from offset {committed_offset} (size={wal_size})")
+    _wal_replaying = True
+    replayed = 0
+    last_seq = manifest.wal.committed_seq if manifest is not None else 0
+
+    try:
+        with storage.write_lock():
+            for start, end, record, err in wal_mod.iter_records(WAL_PATH, committed_offset):
+                if err is not None:
+                    _wal_readonly_reason = f"wal corrupt at offset {err.offset}: {err}"
+                    print(f"[wal] {_wal_readonly_reason}")
+                    return
+                try:
+                    _apply_wal_record(record)
+                except Exception as e:
+                    _wal_readonly_reason = f"replay failed at seq {record.seq}: {e}"
+                    print(f"[wal] {_wal_readonly_reason}")
+                    return
+                last_seq = record.seq
+                replayed += 1
+
+            # All replayed successfully — checkpoint and truncate.
+            _wal_next_seq = last_seq
+            save_store(new_index=index, new_chunks=stored_chunks, wal_offset=0, wal_seq=last_seq)
+            wal_mod.truncate_atomic(WAL_PATH)
+            print(f"[wal] replayed {replayed} ops, WAL truncated")
+    finally:
+        _wal_replaying = False
+
+
 def load_store():
-    global index, stored_chunks, chunk_set
+    global index, stored_chunks, chunk_set, _wal_next_seq
     _emb_cache.clear()
     _source_hashes.clear()
 
@@ -177,13 +259,18 @@ def load_store():
         if manifest is None:
             os.makedirs(STORAGE_DIR, exist_ok=True)
             new_manifest = storage.build_manifest_from_files(
-                TEXTS_PATH, INDEX_PATH, len(stored_chunks), index
+                TEXTS_PATH, INDEX_PATH, len(stored_chunks), index,
+                wal_path=os.path.basename(WAL_PATH),
+                wal_committed_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+                wal_committed_seq=0,
             )
             storage.write_manifest(MANIFEST_PATH, new_manifest)
             print(f"[storage] manifest missing, generated at {MANIFEST_PATH}")
+            manifest = new_manifest
         else:
             mismatches = storage.verify_manifest(
-                manifest, TEXTS_PATH, len(stored_chunks), INDEX_PATH, index
+                manifest, TEXTS_PATH, len(stored_chunks), INDEX_PATH, index,
+                wal_path=WAL_PATH if WAL_ENABLED else None,
             )
             if mismatches:
                 details = "; ".join(
@@ -193,7 +280,12 @@ def load_store():
                     f"storage manifest mismatch, refusing to start: {details}"
                 )
 
+        # WAL replay AFTER manifest check (uses manifest.wal.committed_offset as anchor).
+        # Replay may mutate index/stored_chunks, so embedding cache rebuild runs afterward.
+        _replay_wal_if_needed(manifest)
+
         # 从 FAISS 向量直接恢复 embedding 缓存，避免 delete_source 重建索引时重复 encode
+        _emb_cache.clear()
         for i, chunk in enumerate(stored_chunks):
             vec = np.zeros(DIM, dtype=np.float32)
             index.reconstruct(i, vec)
@@ -212,12 +304,54 @@ def load_store():
     rebuild_bm25()
 
 
-def save_store(new_index=None, new_chunks=None):
+def _assert_writable():
+    """Raise 503 if service is in WAL-induced read-only mode."""
+    if _wal_readonly_reason is not None:
+        raise HTTPException(status_code=503, detail=f"storage read-only: {_wal_readonly_reason}")
+
+
+def _wal_append_op(op: str, payload: Dict) -> tuple:
+    """Append one WAL record and return (new_offset, seq). No-op when WAL disabled.
+
+    Caller MUST hold storage.write_lock().
+    """
+    global _wal_next_seq
+    if not WAL_ENABLED:
+        return 0, 0
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    _wal_next_seq += 1
+    record = wal_mod.make_record(seq=_wal_next_seq, op=op, payload=payload)
+    new_offset = wal_mod.append(WAL_PATH, wal_mod.encode_record(record))
+    return new_offset, _wal_next_seq
+
+
+def _maybe_checkpoint():
+    """Truncate WAL if it has grown past the configured threshold.
+
+    Caller MUST hold storage.write_lock(). Failure logs and leaves WAL intact.
+    """
+    if not WAL_ENABLED:
+        return
+    size = wal_mod.file_size(WAL_PATH)
+    if size <= WAL_MAX_SIZE_BYTES:
+        return
+    try:
+        save_store(new_index=index, new_chunks=stored_chunks, wal_offset=0, wal_seq=_wal_next_seq)
+        wal_mod.truncate_atomic(WAL_PATH)
+        print(f"[wal] checkpoint: truncated WAL ({size} bytes) after seq={_wal_next_seq}")
+    except Exception as e:
+        print(f"[wal] checkpoint failed, keeping WAL: {e}")
+
+
+def save_store(new_index=None, new_chunks=None, *, wal_offset: int = 0, wal_seq: int = 0):
     """Atomically persist the store.
 
     If new_index / new_chunks are provided, persist those instead of the current
     globals. Caller is responsible for swapping the module globals on success.
     On any failure, existing files on disk are left untouched.
+
+    wal_offset / wal_seq are written into the manifest as the new commit point;
+    pass 0 / 0 when WAL is disabled or when checkpointing (post-truncation).
     """
     idx_obj = new_index if new_index is not None else index
     chunks_obj = new_chunks if new_chunks is not None else stored_chunks
@@ -227,7 +361,10 @@ def save_store(new_index=None, new_chunks=None):
 
     os.makedirs(STORAGE_DIR, exist_ok=True)
     manifest = storage.build_manifest_from_files(
-        TEXTS_PATH, INDEX_PATH, len(chunks_obj), idx_obj
+        TEXTS_PATH, INDEX_PATH, len(chunks_obj), idx_obj,
+        wal_path=os.path.basename(WAL_PATH),
+        wal_committed_offset=wal_offset,
+        wal_committed_seq=wal_seq,
     )
     storage.write_manifest(MANIFEST_PATH, manifest)
 
@@ -289,6 +426,13 @@ async def lifespan(_app: FastAPI):
     load_store()
     print(_t("service_ready", port=config['server']['port']))
     yield
+    # Clean-shutdown checkpoint so the next start has nothing to replay.
+    if WAL_ENABLED and _wal_readonly_reason is None:
+        try:
+            with storage.write_lock():
+                _maybe_checkpoint()
+        except Exception as e:
+            print(f"[wal] shutdown checkpoint failed: {e}")
     global reranker
     if reranker is not None:
         del reranker
@@ -317,47 +461,65 @@ class RetrieveResponse(BaseModel):
 
 
 # ================= INGEST =================
-@app.post("/ingest")
-def ingest(req: IngestRequest):
+def _ingest_core(text: str, source: str) -> Dict:
+    """Core ingest logic callable from both HTTP handler and WAL replay.
+
+    Caller MUST hold storage.write_lock(). Does NOT append WAL — that is the
+    handler's job so that replay of a WAL entry doesn't re-append itself.
+    """
     global index, stored_chunks, chunk_set
 
+    content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
+    if source in _source_hashes and _source_hashes[source] == content_hash:
+        print(_t("ingest_skip", source=source))
+        return {"status": "skip", "chunks_added": 0, "reason": "content unchanged"}
+
+    chunks = chunk_text(text)
+    new_chunks = []
+    local_chunk_set = set(chunk_set)
+    for c in chunks:
+        if c not in local_chunk_set:
+            local_chunk_set.add(c)
+            new_chunks.append({"text": c, "source": source, "source_hash": content_hash})
+
+    if not new_chunks:
+        _source_hashes[source] = content_hash
+        return {"status": "ok", "chunks_added": 0}
+
+    embeddings = encode_with_cache([c["text"] for c in new_chunks])
+    new_index = faiss.clone_index(index)
+    new_index.add(embeddings)
+    merged_chunks = stored_chunks + new_chunks
+
+    # WAL offset + seq are bookkept by the handler before calling us; pass current
+    # file size as the new committed offset and current _wal_next_seq.
+    save_store(
+        new_index=new_index,
+        new_chunks=merged_chunks,
+        wal_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+        wal_seq=_wal_next_seq,
+    )
+
+    index = new_index
+    stored_chunks = merged_chunks
+    chunk_set = local_chunk_set
+    _source_hashes[source] = content_hash
+    rebuild_bm25()
+    return {"status": "ok", "chunks_added": len(new_chunks)}
+
+
+@app.post("/ingest")
+def ingest(req: IngestRequest):
+    _assert_writable()
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
 
     with storage.write_lock():
-        # Plan A: 来源级 hash 跳过——内容未变更时直接返回，零嵌入调用
-        content_hash = hashlib.md5(req.text.encode("utf-8")).hexdigest()
-        if req.source in _source_hashes and _source_hashes[req.source] == content_hash:
-            print(_t("ingest_skip", source=req.source))
-            return {"status": "skip", "chunks_added": 0, "reason": "content unchanged"}
-
-        chunks = chunk_text(req.text)
-        new_chunks = []
-        local_chunk_set = set(chunk_set)
-        for c in chunks:
-            if c not in local_chunk_set:
-                local_chunk_set.add(c)
-                new_chunks.append({"text": c, "source": req.source, "source_hash": content_hash})
-
-        if not new_chunks:
-            _source_hashes[req.source] = content_hash
-            return {"status": "ok", "chunks_added": 0}
-
-        # 双 buffer：在克隆索引上执行写入，成功落盘后再原子替换全局引用
-        embeddings = encode_with_cache([c["text"] for c in new_chunks])
-        new_index = faiss.clone_index(index)
-        new_index.add(embeddings)
-        merged_chunks = stored_chunks + new_chunks
-
-        save_store(new_index=new_index, new_chunks=merged_chunks)
-
-        index = new_index
-        stored_chunks = merged_chunks
-        chunk_set = local_chunk_set
-        _source_hashes[req.source] = content_hash
-        rebuild_bm25()
-
-        return {"status": "ok", "chunks_added": len(new_chunks)}
+        # Append WAL before the expensive work so crash-between-here-and-save is recoverable.
+        _wal_append_op("ingest", {"text": req.text, "source": req.source})
+        result = _ingest_core(req.text, req.source)
+        _maybe_checkpoint()
+        return result
 
 
 # ================= RETRIEVE =================
@@ -537,6 +699,10 @@ def storage_integrity_check():
                 "ntotal": manifest.index.ntotal,
                 "sha256": manifest.index.sha256,
             },
+            "wal": {
+                "committed_offset": manifest.wal.committed_offset,
+                "committed_seq": manifest.wal.committed_seq,
+            },
         }
 
     try:
@@ -572,7 +738,14 @@ def storage_integrity_check():
 # ================= HEALTH =================
 @app.get("/health")
 def health():
-    return {"status": "ok", "total_chunks": len(stored_chunks), "rerank_enabled": rerank_enabled, "verbose_enabled": verbose_enabled}
+    return {
+        "status": "ok",
+        "total_chunks": len(stored_chunks),
+        "rerank_enabled": rerank_enabled,
+        "verbose_enabled": verbose_enabled,
+        "wal_replaying": _wal_replaying,
+        "wal_readonly_reason": _wal_readonly_reason,
+    }
 
 
 # ================= STATS =================
@@ -606,50 +779,79 @@ def sources():
 # ================= DELETE BY SOURCE =================
 # 按来源名称删除 chunks。
 # FAISS IndexFlatIP 不支持按 id 删除，必须用剩余 chunks 重建整个索引。
-@app.delete("/source")
-def delete_source(name: str):
+def _delete_source_core(name: str) -> Dict:
+    """Core delete-source logic callable from both HTTP handler and replay.
+    Caller MUST hold storage.write_lock()."""
     global index, stored_chunks, chunk_set
 
+    remaining = [c for c in stored_chunks if c.get("source") != name]
+    removed = len(stored_chunks) - len(remaining)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail=f"source '{name}' not found")
+
+    new_index = faiss.IndexFlatIP(DIM)
+    if remaining:
+        embeddings = encode_with_cache([c["text"] for c in remaining])
+        new_index.add(embeddings)
+
+    save_store(
+        new_index=new_index,
+        new_chunks=remaining,
+        wal_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+        wal_seq=_wal_next_seq,
+    )
+
+    index = new_index
+    stored_chunks = remaining
+    chunk_set = set(c["text"] for c in remaining)
+    for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
+        del _emb_cache[k]
+    _source_hashes.pop(name, None)
+    rebuild_bm25()
+    return {"status": "ok", "removed_chunks": removed}
+
+
+@app.delete("/source")
+def delete_source(name: str):
+    _assert_writable()
     with storage.write_lock():
-        remaining = [c for c in stored_chunks if c.get("source") != name]
-        removed = len(stored_chunks) - len(remaining)
-        if removed == 0:
-            raise HTTPException(status_code=404, detail=f"source '{name}' not found")
-
-        new_index = faiss.IndexFlatIP(DIM)
-        if remaining:
-            embeddings = encode_with_cache([c["text"] for c in remaining])
-            new_index.add(embeddings)
-
-        save_store(new_index=new_index, new_chunks=remaining)
-
-        index = new_index
-        stored_chunks = remaining
-        chunk_set = set(c["text"] for c in remaining)
-        # 清理不再存在于任何来源的缓存条目，避免 rag-update 后缓存持续膨胀
-        for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
-            del _emb_cache[k]
-        _source_hashes.pop(name, None)
-        rebuild_bm25()
-        return {"status": "ok", "removed_chunks": removed}
+        _wal_append_op("delete_source", {"name": name})
+        result = _delete_source_core(name)
+        _maybe_checkpoint()
+        return result
 
 
 # ================= RESET =================
-@app.delete("/reset")
-def reset():
+def _reset_core() -> Dict:
+    """Core reset logic callable from both HTTP handler and replay.
+    Caller MUST hold storage.write_lock()."""
     global index, stored_chunks, chunk_set
 
-    with storage.write_lock():
-        new_index = faiss.IndexFlatIP(DIM)
-        save_store(new_index=new_index, new_chunks=[])
+    new_index = faiss.IndexFlatIP(DIM)
+    save_store(
+        new_index=new_index,
+        new_chunks=[],
+        wal_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+        wal_seq=_wal_next_seq,
+    )
 
-        index = new_index
-        stored_chunks = []
-        chunk_set = set()
-        _emb_cache.clear()
-        _source_hashes.clear()
-        rebuild_bm25()
-        return {"status": "reset"}
+    index = new_index
+    stored_chunks = []
+    chunk_set = set()
+    _emb_cache.clear()
+    _source_hashes.clear()
+    rebuild_bm25()
+    return {"status": "reset"}
+
+
+@app.delete("/reset")
+def reset():
+    _assert_writable()
+    with storage.write_lock():
+        _wal_append_op("reset", {})
+        result = _reset_core()
+        _maybe_checkpoint()
+        return result
 
 
 # ================= EXPORT =================

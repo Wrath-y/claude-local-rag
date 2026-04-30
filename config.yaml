@@ -23,6 +23,9 @@ rerank:
 storage:
   index_path: "index.bin"
   texts_path: "chunks.pkl"
+  wal:
+    enabled: true       # WAL 开关；false 时回退到无 replay 行为
+    max_size_mb: 10     # 超过此大小触发 checkpoint 并截断 WAL
 
 log:
   lang: "en"   # 日志语言：zh（中文）或 en（English）

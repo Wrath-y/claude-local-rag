@@ -21,6 +21,11 @@ tests/
 │   ├── test_wal_replay.py
 │   ├── test_wal_readonly.py
 │   └── test_wal_checkpoint.py
+├── health-metrics-observability/
+│   ├── test_metrics_endpoint.py
+│   ├── test_health_states.py
+│   ├── test_structured_log.py
+│   └── test_integrity_disk_free.py
 └── <next-change>/                    # Future changes follow the same pattern
     └── test_*.py
 ```
@@ -70,6 +75,11 @@ tests/
 │   ├── test_wal_replay.py
 │   ├── test_wal_readonly.py
 │   └── test_wal_checkpoint.py
+├── health-metrics-observability/
+│   ├── test_metrics_endpoint.py
+│   ├── test_health_states.py
+│   ├── test_structured_log.py
+│   └── test_integrity_disk_free.py
 └── <next-change>/                    # 后续 change 按此模式新建子目录
     └── test_*.py
 ```

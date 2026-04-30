@@ -197,6 +197,16 @@ curl http://127.0.0.1:8765/storage/integrity-check
 - WAL 损坏（CRC 不匹配 / JSON 破损）不静默跳过：服务进入只读降级（`/retrieve` 正常、写端点返回 503），`_wal_readonly_reason` 会在 `/health` 体现。
 - `storage.wal.enabled=false` 回退到无 replay 行为，适合灰度或诊断。
 
+### 监控与可观测性
+
+| 端点 | 用途 |
+|------|------|
+| `GET /health` | 三态探活：`ok` / `degraded`（WAL replay 中 / WAL 只读降级） / `error`（磁盘 <1GB，HTTP 503） |
+| `GET /metrics` | Prometheus 文本格式指标：`rag_ingest_total`、`rag_retrieve_total`、`rag_retrieve_latency_seconds`、`rag_chunk_total`、`rag_index_bytes`、`rag_wal_replaying`、`rag_last_commit_timestamp_seconds` 等 |
+| `GET /storage/integrity-check` | 存储一致性 + `disk_free_bytes` 字段 |
+
+关键事件（ingest/retrieve/WAL replay/checkpoint 完成）通过 `structured_log` 以单行 JSON 发到 stdout，可被 `jq`、Vector、Fluent Bit 直接消费。
+
 ### 真实场景示例
 
 团队将内部 API 文档、接口规范、上线 checklist 存入向量库，开启 `rag-mode on`。

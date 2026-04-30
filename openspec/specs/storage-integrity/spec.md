@@ -87,14 +87,16 @@
 
 ### Requirement: `/storage/integrity-check` 自检端点
 
-服务 SHALL 暴露 `GET /storage/integrity-check` 端点，返回当前存储一致性状态。一致时返回 HTTP 200 与 JSON 摘要（包含 count、ntotal、sha256、committed_at）。manifest 与实际文件不一致时返回 HTTP 409 与差异字段描述。manifest 缺失且 chunks/index 无法读取时返回 HTTP 503。该端点 MUST 为只读操作，MUST NOT 修改任何文件内容。
+服务 SHALL 暴露 `GET /storage/integrity-check` 端点，返回当前存储一致性状态。一致时返回 HTTP 200 与 JSON 摘要（包含 count、ntotal、sha256、committed_at、wal.committed_offset、wal.committed_seq、`disk_free_bytes`）。manifest 与实际文件不一致时返回 HTTP 409 与差异字段描述。manifest 缺失且 chunks/index 无法读取时返回 HTTP 503。该端点 MUST 为只读操作，MUST NOT 修改任何文件内容（除非检测到 manifest 缺失需要自动补齐）。
 
-#### Scenario: 一致状态返回 200
+> 首次引入: concurrent-safe-storage (2026-04-30)；wal + disk_free_bytes 字段由 wal-crash-recovery / health-metrics-observability (2026-04-30) 追加。
+
+#### Scenario: 一致状态返回 200 + 磁盘信息
 
 - **WHEN** 调用 `GET /storage/integrity-check`
 - **AND** 存储层处于一致状态
 - **THEN** 响应状态码为 200
-- **AND** 响应体包含 `chunks.count`、`index.ntotal`、`committed_at` 字段
+- **AND** 响应体包含 `chunks.count`、`index.ntotal`、`committed_at`、`disk_free_bytes` 字段
 
 #### Scenario: 检测出数量不一致
 

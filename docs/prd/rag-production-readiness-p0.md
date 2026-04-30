@@ -13,7 +13,7 @@
 | 1 | HIGH | `concurrent-safe-storage` | 并发安全的存储层 | 存储/索引 | ✅ 已归档 |
 | 2 | HIGH | `wal-crash-recovery` | WAL 与崩溃恢复 | 存储/索引 | ✅ 已归档 |
 | 3 | HIGH | `backup-restore-automation` | 备份与恢复自动化 | 运维 | ⏳ 待生成 |
-| 4 | HIGH | `health-metrics-observability` | 健康监控与指标 | 可观测性 | ⏳ 待生成 |
+| 4 | HIGH | `health-metrics-observability` | 健康监控与指标 | 可观测性 | ✅ 已归档 |
 | 5 | HIGH | `index-self-healing` | 索引损坏自愈 | 存储/索引 | ⏳ 待生成 |
 
 ---

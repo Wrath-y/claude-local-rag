@@ -4,6 +4,7 @@ import os
 import pickle
 import re
 import shutil
+import time
 import zipfile
 import numpy as np
 import faiss
@@ -18,6 +19,8 @@ from typing import List, Dict, Optional
 
 import storage
 import wal as wal_mod
+import metrics
+from obs import structured_log
 
 # ================= CONFIG =================
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,6 +45,15 @@ WAL_PATH = wal_mod.wal_path_for(STORAGE_DIR)
 _wal_cfg = config["storage"].get("wal", {})
 WAL_ENABLED: bool = bool(_wal_cfg.get("enabled", True))
 WAL_MAX_SIZE_BYTES: int = int(float(_wal_cfg.get("max_size_mb", 10)) * 1024 * 1024)
+
+DISK_FREE_ERROR_BYTES: int = 1 * 1024 * 1024 * 1024  # /health → error if free < 1GB
+
+
+def _safe_disk_free() -> int:
+    try:
+        return shutil.disk_usage(DATA_DIR).free
+    except OSError:
+        return -1
 DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
@@ -99,8 +111,10 @@ RERANK_MODEL_NAME = config["rerank"]["model"]
 
 # ================= MODEL =================
 print(_t("model_loading", name=MODEL_NAME))
+_model_t0 = time.perf_counter()
 model = SentenceTransformer(MODEL_NAME)
 DIM = model.get_embedding_dimension()
+metrics.model_load_seconds.set(time.perf_counter() - _model_t0)
 print(_t("model_loaded", dim=DIM))
 
 # rerank 模型：lazy 加载，首次开启时初始化
@@ -198,6 +212,8 @@ def _replay_wal_if_needed(manifest) -> None:
 
     print(f"[wal] replaying ops from offset {committed_offset} (size={wal_size})")
     _wal_replaying = True
+    metrics.wal_replaying.set(1)
+    structured_log("wal_replay_start", committed_offset=committed_offset, wal_size=wal_size)
     replayed = 0
     last_seq = manifest.wal.committed_seq if manifest is not None else 0
 
@@ -222,8 +238,10 @@ def _replay_wal_if_needed(manifest) -> None:
             save_store(new_index=index, new_chunks=stored_chunks, wal_offset=0, wal_seq=last_seq)
             wal_mod.truncate_atomic(WAL_PATH)
             print(f"[wal] replayed {replayed} ops, WAL truncated")
+            structured_log("wal_replay_done", replayed=replayed, last_seq=last_seq)
     finally:
         _wal_replaying = False
+        metrics.wal_replaying.set(0)
 
 
 def load_store():
@@ -339,6 +357,8 @@ def _maybe_checkpoint():
         save_store(new_index=index, new_chunks=stored_chunks, wal_offset=0, wal_seq=_wal_next_seq)
         wal_mod.truncate_atomic(WAL_PATH)
         print(f"[wal] checkpoint: truncated WAL ({size} bytes) after seq={_wal_next_seq}")
+        metrics.last_commit_timestamp_seconds.set(time.time())
+        structured_log("checkpoint_done", wal_seq=_wal_next_seq, wal_size_before=size)
     except Exception as e:
         print(f"[wal] checkpoint failed, keeping WAL: {e}")
 
@@ -512,14 +532,35 @@ def _ingest_core(text: str, source: str) -> Dict:
 def ingest(req: IngestRequest):
     _assert_writable()
     if not req.text.strip():
+        metrics.ingest_total.labels(result="error").inc()
         raise HTTPException(status_code=400, detail="text is empty")
 
-    with storage.write_lock():
-        # Append WAL before the expensive work so crash-between-here-and-save is recoverable.
-        _wal_append_op("ingest", {"text": req.text, "source": req.source})
-        result = _ingest_core(req.text, req.source)
-        _maybe_checkpoint()
-        return result
+    try:
+        with storage.write_lock():
+            _wal_append_op("ingest", {"text": req.text, "source": req.source})
+            result = _ingest_core(req.text, req.source)
+            _maybe_checkpoint()
+    except HTTPException:
+        metrics.ingest_total.labels(result="error").inc()
+        raise
+    except Exception:
+        metrics.ingest_total.labels(result="error").inc()
+        raise
+
+    label = "skip" if result.get("status") == "skip" else "ok"
+    metrics.ingest_total.labels(result=label).inc()
+    metrics.chunk_total.set(len(stored_chunks))
+    try:
+        metrics.index_bytes.set(os.path.getsize(INDEX_PATH))
+    except OSError:
+        pass
+    structured_log(
+        "ingest_done",
+        source=req.source,
+        status=result.get("status"),
+        chunks_added=result.get("chunks_added", 0),
+    )
+    return result
 
 
 # ================= RETRIEVE =================
@@ -527,6 +568,8 @@ def ingest(req: IngestRequest):
 def retrieve(req: RetrieveRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
+
+    t0 = time.perf_counter()
 
     # 入口一次性 snapshot 全局引用：写路径可能在检索中途原子替换 index/chunks，
     # 使用本地引用保证单次检索全程基于一致快照（GIL 保证单次赋值读原子）
@@ -622,6 +665,16 @@ def retrieve(req: RetrieveRequest):
         f"[来源: {c['source']}]\n{c['text']}"
         for _, c, _, _ in top_candidates
     ]
+
+    latency_s = time.perf_counter() - t0
+    metrics.retrieve_latency_seconds.observe(latency_s)
+    metrics.retrieve_total.labels(hit="true" if top_candidates else "false").inc()
+    structured_log(
+        "retrieve_done",
+        hit=bool(top_candidates),
+        latency_ms=round(latency_s * 1000, 2),
+        returned_chunks=len(top_candidates),
+    )
     return RetrieveResponse(chunks=results)
 
 
@@ -703,6 +756,7 @@ def storage_integrity_check():
                 "committed_offset": manifest.wal.committed_offset,
                 "committed_seq": manifest.wal.committed_seq,
             },
+            "disk_free_bytes": _safe_disk_free(),
         }
 
     try:
@@ -732,20 +786,58 @@ def storage_integrity_check():
             "ntotal": manifest.index.ntotal,
             "sha256": manifest.index.sha256,
         },
+        "wal": {
+            "committed_offset": manifest.wal.committed_offset,
+            "committed_seq": manifest.wal.committed_seq,
+        },
+        "disk_free_bytes": _safe_disk_free(),
     }
 
 
 # ================= HEALTH =================
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
+    try:
+        free_bytes = shutil.disk_usage(DATA_DIR).free
+    except OSError:
+        free_bytes = -1  # treat unreadable disk as ok-unknown, not error
+
+    if free_bytes >= 0 and free_bytes < DISK_FREE_ERROR_BYTES:
+        status_value = "error"
+        reason = f"disk free {free_bytes} bytes below threshold {DISK_FREE_ERROR_BYTES}"
+        http_code = 503
+    elif _wal_readonly_reason is not None:
+        status_value = "degraded"
+        reason = _wal_readonly_reason
+        http_code = 200
+    elif _wal_replaying:
+        status_value = "degraded"
+        reason = "wal replay in progress"
+        http_code = 200
+    else:
+        status_value = "ok"
+        reason = None
+        http_code = 200
+
+    body = {
+        "status": status_value,
+        "reason": reason,
         "total_chunks": len(stored_chunks),
         "rerank_enabled": rerank_enabled,
         "verbose_enabled": verbose_enabled,
         "wal_replaying": _wal_replaying,
         "wal_readonly_reason": _wal_readonly_reason,
+        "disk_free_bytes": free_bytes,
     }
+    if http_code == 200:
+        return body
+    return JSONResponse(status_code=http_code, content=body)
+
+
+@app.get("/metrics")
+def metrics_endpoint():
+    from fastapi.responses import Response
+    return Response(content=metrics.render(), media_type=metrics.content_type)
 
 
 # ================= STATS =================

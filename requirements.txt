@@ -7,3 +7,4 @@ numpy
 requests
 rank-bm25
 python-multipart
+prometheus-client>=0.20

@@ -3,6 +3,7 @@ import sys, json, os, re, requests
 data = json.load(sys.stdin)
 prompt = data.get('prompt', '')
 transcript_path = data.get('transcript_path', '')
+cwd = data.get('cwd', '') or os.getcwd()
 
 
 def estimate_context_tokens(path: str) -> int:
@@ -29,9 +30,9 @@ def estimate_context_tokens(path: str) -> int:
     except Exception:
         return 0
 
-_dir = os.path.dirname(os.path.abspath(__file__))
 # mode on/off 持久化标志文件：存在即为 on，删除即为 off
-MODE_FILE = os.path.join(_dir, 'rag_mode')
+# 存放在 Claude 运行时的工作目录（cwd），实现按项目隔离
+MODE_FILE = os.path.join(cwd, '.rag_mode')
 
 # ===== 工具函数 =====
 def rag_mode_on():
@@ -58,7 +59,7 @@ mode_match = re.search(r'/rag[-\s]mode\s+(on|off)', prompt, re.IGNORECASE)
 if mode_match:
     on = mode_match.group(1).lower() == 'on'
     set_rag_mode(on)
-    output(f"\n[RAG] 自动检索模式已{'开启' if on else '关闭'}\n")
+    output(f"\n[RAG] 自动检索模式已{'开启' if on else '关闭'}（标志文件：{MODE_FILE}）\n")
     sys.exit(0)
 
 # ===== 2. mode on 时自动检索 =====

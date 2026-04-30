@@ -1,6 +1,14 @@
 # 向量库数据（本地生成，不上传）
 index.bin
 chunks.pkl
+storage/
+
+# 原子写残留（崩溃后启动自动清理；此处兜底）
+*.tmp
+*.new
+
+# 测试
+.pytest_cache/
 
 # Python
 __pycache__/

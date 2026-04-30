@@ -10,11 +10,13 @@ import faiss
 import yaml
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
 from typing import List, Dict
+
+import storage
 
 # ================= CONFIG =================
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +33,9 @@ RESPONSE_RESERVE = config["retrieve"].get("response_reserve", 8000)
 AVG_CHUNK_TOKENS = (CHUNK_MIN + CHUNK_MAX) // 2  # 每个 chunk 的平均 token 数估算
 INDEX_PATH = os.path.join(_dir, config["storage"]["index_path"])
 TEXTS_PATH = os.path.join(_dir, config["storage"]["texts_path"])
+DATA_DIR = _dir
+STORAGE_DIR = os.path.join(_dir, "storage")
+MANIFEST_PATH = storage.manifest_path_for(STORAGE_DIR)
 DOC_PREFIX = config["embedding"]["doc_prefix"]
 QUERY_PREFIX = config["embedding"]["query_prefix"]
 
@@ -143,6 +148,12 @@ def load_store():
     global index, stored_chunks, chunk_set
     _emb_cache.clear()
     _source_hashes.clear()
+
+    # 清理上次崩溃残留的临时文件，避免干扰判断
+    removed = storage.cleanup_orphan_tempfiles(DATA_DIR)
+    if removed:
+        print(f"[storage] cleaned orphan tempfiles: {[os.path.basename(p) for p in removed]}")
+
     if os.path.exists(INDEX_PATH) and os.path.exists(TEXTS_PATH):
         index = faiss.read_index(INDEX_PATH)
         with open(TEXTS_PATH, "rb") as f:
@@ -153,6 +164,35 @@ def load_store():
         else:
             stored_chunks = raw
         chunk_set = set(c["text"] for c in stored_chunks)
+
+        # 先做一致性校验：count vs ntotal 不匹配时立即报错，避免后续 reconstruct 崩溃
+        if len(stored_chunks) != index.ntotal:
+            raise RuntimeError(
+                f"storage inconsistency: chunks.count={len(stored_chunks)} != "
+                f"index.ntotal={index.ntotal}"
+            )
+
+        # Manifest 校验：缺失则自动补齐；存在但与实际不一致则拒绝启动
+        manifest = storage.read_manifest(MANIFEST_PATH)
+        if manifest is None:
+            os.makedirs(STORAGE_DIR, exist_ok=True)
+            new_manifest = storage.build_manifest_from_files(
+                TEXTS_PATH, INDEX_PATH, len(stored_chunks), index
+            )
+            storage.write_manifest(MANIFEST_PATH, new_manifest)
+            print(f"[storage] manifest missing, generated at {MANIFEST_PATH}")
+        else:
+            mismatches = storage.verify_manifest(
+                manifest, TEXTS_PATH, len(stored_chunks), INDEX_PATH, index
+            )
+            if mismatches:
+                details = "; ".join(
+                    f"{m.field}: expected={m.expected} actual={m.actual}" for m in mismatches
+                )
+                raise RuntimeError(
+                    f"storage manifest mismatch, refusing to start: {details}"
+                )
+
         # 从 FAISS 向量直接恢复 embedding 缓存，避免 delete_source 重建索引时重复 encode
         for i, chunk in enumerate(stored_chunks):
             vec = np.zeros(DIM, dtype=np.float32)
@@ -172,10 +212,24 @@ def load_store():
     rebuild_bm25()
 
 
-def save_store():
-    faiss.write_index(index, INDEX_PATH)
-    with open(TEXTS_PATH, "wb") as f:
-        pickle.dump(stored_chunks, f)
+def save_store(new_index=None, new_chunks=None):
+    """Atomically persist the store.
+
+    If new_index / new_chunks are provided, persist those instead of the current
+    globals. Caller is responsible for swapping the module globals on success.
+    On any failure, existing files on disk are left untouched.
+    """
+    idx_obj = new_index if new_index is not None else index
+    chunks_obj = new_chunks if new_chunks is not None else stored_chunks
+
+    storage.atomic_write_faiss(INDEX_PATH, idx_obj)
+    storage.atomic_write_bytes(TEXTS_PATH, pickle.dumps(chunks_obj))
+
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    manifest = storage.build_manifest_from_files(
+        TEXTS_PATH, INDEX_PATH, len(chunks_obj), idx_obj
+    )
+    storage.write_manifest(MANIFEST_PATH, manifest)
 
 
 # ================= CHUNK =================
@@ -265,34 +319,45 @@ class RetrieveResponse(BaseModel):
 # ================= INGEST =================
 @app.post("/ingest")
 def ingest(req: IngestRequest):
+    global index, stored_chunks, chunk_set
+
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
 
-    # Plan A: 来源级 hash 跳过——内容未变更时直接返回，零嵌入调用
-    content_hash = hashlib.md5(req.text.encode("utf-8")).hexdigest()
-    if req.source in _source_hashes and _source_hashes[req.source] == content_hash:
-        print(_t("ingest_skip", source=req.source))
-        return {"status": "skip", "chunks_added": 0, "reason": "content unchanged"}
+    with storage.write_lock():
+        # Plan A: 来源级 hash 跳过——内容未变更时直接返回，零嵌入调用
+        content_hash = hashlib.md5(req.text.encode("utf-8")).hexdigest()
+        if req.source in _source_hashes and _source_hashes[req.source] == content_hash:
+            print(_t("ingest_skip", source=req.source))
+            return {"status": "skip", "chunks_added": 0, "reason": "content unchanged"}
 
-    chunks = chunk_text(req.text)
-    new_chunks = []
-    for c in chunks:
-        if c not in chunk_set:
-            chunk_set.add(c)
-            new_chunks.append({"text": c, "source": req.source, "source_hash": content_hash})
+        chunks = chunk_text(req.text)
+        new_chunks = []
+        local_chunk_set = set(chunk_set)
+        for c in chunks:
+            if c not in local_chunk_set:
+                local_chunk_set.add(c)
+                new_chunks.append({"text": c, "source": req.source, "source_hash": content_hash})
 
-    _source_hashes[req.source] = content_hash
+        if not new_chunks:
+            _source_hashes[req.source] = content_hash
+            return {"status": "ok", "chunks_added": 0}
 
-    if not new_chunks:
-        return {"status": "ok", "chunks_added": 0}
+        # 双 buffer：在克隆索引上执行写入，成功落盘后再原子替换全局引用
+        embeddings = encode_with_cache([c["text"] for c in new_chunks])
+        new_index = faiss.clone_index(index)
+        new_index.add(embeddings)
+        merged_chunks = stored_chunks + new_chunks
 
-    embeddings = encode_with_cache([c["text"] for c in new_chunks])
-    index.add(embeddings)
-    stored_chunks.extend(new_chunks)
-    save_store()
-    rebuild_bm25()
+        save_store(new_index=new_index, new_chunks=merged_chunks)
 
-    return {"status": "ok", "chunks_added": len(new_chunks)}
+        index = new_index
+        stored_chunks = merged_chunks
+        chunk_set = local_chunk_set
+        _source_hashes[req.source] = content_hash
+        rebuild_bm25()
+
+        return {"status": "ok", "chunks_added": len(new_chunks)}
 
 
 # ================= RETRIEVE =================
@@ -301,6 +366,12 @@ def retrieve(req: RetrieveRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is empty")
 
+    # 入口一次性 snapshot 全局引用：写路径可能在检索中途原子替换 index/chunks，
+    # 使用本地引用保证单次检索全程基于一致快照（GIL 保证单次赋值读原子）
+    local_index = index
+    local_chunks = stored_chunks
+    local_bm25 = bm25
+
     def log(msg: str):
         if verbose_enabled:
             print(msg)
@@ -308,7 +379,7 @@ def retrieve(req: RetrieveRequest):
     q_short = req.text[:60] + ("..." if len(req.text) > 60 else "")
     log(_t("retrieve_query", q=q_short))
 
-    if index.ntotal == 0:
+    if local_index.ntotal == 0:
         log(_t("retrieve_empty_store"))
         return RetrieveResponse(chunks=[])
 
@@ -325,16 +396,16 @@ def retrieve(req: RetrieveRequest):
     embedding = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
     embedding = np.array(embedding, dtype=np.float32)
 
-    k = min(dynamic_top_k * 3, index.ntotal)
-    scores, indices = index.search(embedding, k)
-    log(_t("retrieve_faiss", k=k, n=index.ntotal))
+    k = min(dynamic_top_k * 3, local_index.ntotal)
+    scores, indices = local_index.search(embedding, k)
+    log(_t("retrieve_faiss", k=k, n=local_index.ntotal))
 
     # 先过滤无效候选，再批量计算 BM25（避免逐条调用，性能更好）
     valid_indices: List[int] = []
     valid_vec_scores: List[float] = []
     dropped_threshold = 0
     for score, i in zip(scores[0], indices[0]):
-        if i >= len(stored_chunks):
+        if i >= len(local_chunks):
             continue
         if score < SCORE_THRESHOLD:
             dropped_threshold += 1
@@ -345,9 +416,9 @@ def retrieve(req: RetrieveRequest):
     log(_t("retrieve_threshold", t=SCORE_THRESHOLD, d=dropped_threshold, r=len(valid_indices)))
 
     # BM25 批量评分，归一化到 [0, 1]
-    if bm25 is not None and valid_indices:
+    if local_bm25 is not None and valid_indices:
         query_tokens = _bigrams(req.text)
-        all_bm25 = bm25.get_scores(query_tokens)
+        all_bm25 = local_bm25.get_scores(query_tokens)
         raw_kw = [float(all_bm25[i]) for i in valid_indices]
         max_kw = max(raw_kw) if max(raw_kw) > 0 else 1.0
         kw_scores = [s / max_kw for s in raw_kw]
@@ -356,7 +427,7 @@ def retrieve(req: RetrieveRequest):
 
     candidates = []
     for idx, vec_score, kw in zip(valid_indices, valid_vec_scores, kw_scores):
-        chunk = stored_chunks[idx]
+        chunk = local_chunks[idx]
         final_score = vec_score * 0.7 + kw * 0.3
         candidates.append((final_score, chunk, vec_score, kw))
 
@@ -420,6 +491,84 @@ def toggle_dynamic_top_k(enabled: bool):
     return {"dynamic_top_k_enabled": dynamic_top_k_enabled}
 
 
+# ================= STORAGE INTEGRITY =================
+@app.get("/storage/integrity-check")
+def storage_integrity_check():
+    """Check on-disk files vs manifest vs in-memory index consistency.
+
+    - 200: all consistent (returns summary + committed_at)
+    - 200 with regenerated=True: manifest was missing, auto-generated from live state
+    - 409: manifest present but mismatches actual files/index
+    - 503: pickle or FAISS file unreadable / missing
+    """
+    if not os.path.exists(INDEX_PATH) or not os.path.exists(TEXTS_PATH):
+        raise HTTPException(
+            status_code=503,
+            detail="storage files missing: chunks.pkl or index.bin not present",
+        )
+
+    # Only light sanity checks on live state (no file re-read — globals are authoritative)
+    try:
+        actual_count = len(stored_chunks)
+        actual_ntotal = index.ntotal
+        actual_dim = index.d
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"in-memory index unreadable: {e}")
+
+    manifest = storage.read_manifest(MANIFEST_PATH)
+
+    if manifest is None:
+        with storage.write_lock():
+            # Re-check under lock: another caller may have generated it
+            manifest = storage.read_manifest(MANIFEST_PATH)
+            if manifest is None:
+                os.makedirs(STORAGE_DIR, exist_ok=True)
+                manifest = storage.build_manifest_from_files(
+                    TEXTS_PATH, INDEX_PATH, actual_count, index
+                )
+                storage.write_manifest(MANIFEST_PATH, manifest)
+        return {
+            "status": "ok",
+            "regenerated": True,
+            "committed_at": manifest.committed_at,
+            "chunks": {"count": manifest.chunks.count, "sha256": manifest.chunks.sha256},
+            "index": {
+                "dim": manifest.index.dim,
+                "ntotal": manifest.index.ntotal,
+                "sha256": manifest.index.sha256,
+            },
+        }
+
+    try:
+        mismatches = storage.verify_manifest(
+            manifest, TEXTS_PATH, actual_count, INDEX_PATH, index
+        )
+    except OSError as e:
+        raise HTTPException(status_code=503, detail=f"storage file unreadable: {e}")
+
+    if mismatches:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "mismatch",
+                "committed_at": manifest.committed_at,
+                "mismatches": [m.to_dict() for m in mismatches],
+            },
+        )
+
+    return {
+        "status": "ok",
+        "regenerated": False,
+        "committed_at": manifest.committed_at,
+        "chunks": {"count": manifest.chunks.count, "sha256": manifest.chunks.sha256},
+        "index": {
+            "dim": manifest.index.dim,
+            "ntotal": manifest.index.ntotal,
+            "sha256": manifest.index.sha256,
+        },
+    }
+
+
 # ================= HEALTH =================
 @app.get("/health")
 def health():
@@ -460,42 +609,47 @@ def sources():
 @app.delete("/source")
 def delete_source(name: str):
     global index, stored_chunks, chunk_set
-    remaining = [c for c in stored_chunks if c.get("source") != name]
-    removed = len(stored_chunks) - len(remaining)
-    if removed == 0:
-        raise HTTPException(status_code=404, detail=f"source '{name}' not found")
 
-    new_index = faiss.IndexFlatIP(DIM)
-    if remaining:
-        embeddings = encode_with_cache([c["text"] for c in remaining])
-        new_index.add(embeddings)
+    with storage.write_lock():
+        remaining = [c for c in stored_chunks if c.get("source") != name]
+        removed = len(stored_chunks) - len(remaining)
+        if removed == 0:
+            raise HTTPException(status_code=404, detail=f"source '{name}' not found")
 
-    index = new_index
-    stored_chunks = remaining
-    chunk_set = set(c["text"] for c in remaining)
-    # 清理不再存在于任何来源的缓存条目，避免 rag-update 后缓存持续膨胀
-    for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
-        del _emb_cache[k]
-    _source_hashes.pop(name, None)
-    save_store()
-    rebuild_bm25()
-    return {"status": "ok", "removed_chunks": removed}
+        new_index = faiss.IndexFlatIP(DIM)
+        if remaining:
+            embeddings = encode_with_cache([c["text"] for c in remaining])
+            new_index.add(embeddings)
+
+        save_store(new_index=new_index, new_chunks=remaining)
+
+        index = new_index
+        stored_chunks = remaining
+        chunk_set = set(c["text"] for c in remaining)
+        # 清理不再存在于任何来源的缓存条目，避免 rag-update 后缓存持续膨胀
+        for k in [k for k in list(_emb_cache.keys()) if k not in chunk_set]:
+            del _emb_cache[k]
+        _source_hashes.pop(name, None)
+        rebuild_bm25()
+        return {"status": "ok", "removed_chunks": removed}
 
 
 # ================= RESET =================
 @app.delete("/reset")
 def reset():
     global index, stored_chunks, chunk_set
-    index = faiss.IndexFlatIP(DIM)
-    stored_chunks = []
-    chunk_set = set()
-    _emb_cache.clear()
-    _source_hashes.clear()
-    rebuild_bm25()
-    for p in [INDEX_PATH, TEXTS_PATH]:
-        if os.path.exists(p):
-            os.remove(p)
-    return {"status": "reset"}
+
+    with storage.write_lock():
+        new_index = faiss.IndexFlatIP(DIM)
+        save_store(new_index=new_index, new_chunks=[])
+
+        index = new_index
+        stored_chunks = []
+        chunk_set = set()
+        _emb_cache.clear()
+        _source_hashes.clear()
+        rebuild_bm25()
+        return {"status": "reset"}
 
 
 # ================= EXPORT =================

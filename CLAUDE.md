@@ -168,6 +168,27 @@ tail -f /tmp/claude-local-rag.log
 ```
 每条候选显示向量相似度（`vec`）、关键词覆盖率（`kw`）、混合得分（`final`）、来源及文本预览。
 
+### 存储一致性
+
+每次成功写入（ingest / delete-source / reset）都会原子落盘并更新 `storage/manifest.json`，其中记录 chunks 与 index 的 `count` / `ntotal` / `sha256` 摘要。服务重启时比对 manifest 与实际文件，若不一致则拒绝启动并打印差异，避免基于半写或被篡改的数据继续运行。
+
+主动检查：
+
+```bash
+curl http://127.0.0.1:8765/storage/integrity-check
+```
+
+响应语义：
+
+| HTTP | 含义 |
+|------|------|
+| 200 `regenerated=false` | 一致，返回最近 `committed_at` 与摘要 |
+| 200 `regenerated=true` | manifest 缺失已自动补齐 |
+| 409 | 不一致，body 列出 `mismatches` |
+| 503 | `chunks.pkl` / `index.bin` 缺失或不可读 |
+
+`/rag-status` 会自动汇总这条信息。
+
 ### 真实场景示例
 
 团队将内部 API 文档、接口规范、上线 checklist 存入向量库，开启 `rag-mode on`。

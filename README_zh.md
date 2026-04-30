@@ -118,24 +118,6 @@ start.bat
 
 ---
 
-### 🤖 代码自动入库
-
-开启后，Claude 每次读取或修改源码文件时自动同步向量库：
-
-```bash
-/rag-auto-index on    # 开启（持久化）
-/rag-auto-index off   # 关闭
-```
-
-| 操作 | 行为 |
-|------|------|
-| Claude 读取源码文件 | 自动入库（去重） |
-| Claude 编辑源码文件 | 自动删旧 chunks + 重新入库 |
-
-> 仅处理 `.py` `.ts` `.go` `.java` `.rs` 等源码文件，跳过 > 100KB 的文件。
-
----
-
 ### 🔄 更新文档
 
 文档内容变更后重新同步，一条命令替代「删除 + 重新入库」两步：
@@ -194,7 +176,6 @@ start.bat
 | `/rag-update <链接或路径> [--source <名称>]` | 更新已有来源（删旧 + 重新入库），`--source` 指定来源需与入库时一致 | — |
 | `/rag-retrieve <问题>` | 主动检索 | ✓ 少量 |
 | `/rag-mode on/off` | 自动检索模式 | ✓ 开启时 |
-| `/rag-auto-index on/off` | 代码自动入库 | — |
 | `/rag-rerank on/off` | rerank 精排 | — |
 | `/rag-dynamic-top-k on/off` | 动态 top_k（上下文接近上限时自动缩减返回数量） | — |
 | `/rag-verbose on/off` | 检索可观测性日志 | — |
@@ -403,12 +384,10 @@ claude-local-rag/
 └── .claude/
     ├── settings.json           # Hook 配置
     ├── hook_script.py          # UserPromptSubmit Hook
-    ├── auto_index_hook.py      # PostToolUse Hook（代码自动入库）
     └── commands/               # 斜杠命令定义
         ├── rag.md
         ├── rag-retrieve.md
         ├── rag-mode.md
-        ├── rag-auto-index.md
         └── ...
 ```
 
@@ -431,7 +410,6 @@ claude-local-rag/
 
 - [x] 按来源管理（入库 / 更新 / 删除）
 - [x] 支持飞书文档、本地文件、纯文本多种输入
-- [x] 代码文件自动入库（PostToolUse Hook）
 - [x] Embedding 缓存（跳过已向量化的相同内容，加速重复入库）
 - [ ] 定时重新索引（监听文件变更，自动触发 `/rag-update`）
 - [x] 知识库导出 / 导入（备份 `index.bin` + `chunks.pkl` 并迁移）

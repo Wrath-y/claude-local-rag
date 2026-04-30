@@ -10,18 +10,6 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Read|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 .claude/auto_index_hook.py",
-            "async": true
-          }
-        ]
-      }
     ]
   }
 }

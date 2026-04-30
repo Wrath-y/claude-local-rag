@@ -118,24 +118,6 @@ When enabled, every prompt submission automatically queries the knowledge base a
 
 ---
 
-### 🤖 Auto-Index Code
-
-When enabled, Claude automatically syncs the vector DB whenever it reads or edits source files:
-
-```bash
-/rag-auto-index on    # Enable (persistent)
-/rag-auto-index off   # Disable
-```
-
-| Action | Behavior |
-|--------|----------|
-| Claude reads a source file | Auto-ingest (deduplicates) |
-| Claude edits a source file | Delete old chunks + re-ingest |
-
-> Only processes source files (`.py` `.ts` `.go` `.java` `.rs` etc.). Skips files > 100 KB.
-
----
-
 ### 🔄 Update a Document
 
 Re-sync after content changes — one command replaces the two-step "delete + re-ingest" flow:
@@ -194,7 +176,6 @@ When enabled, the hook estimates how many tokens are already in the conversation
 | `/rag-update <link or path> [--source <name>]` | Update source (delete old + re-ingest); `--source` must match original label | — |
 | `/rag-retrieve <question>` | Manual retrieval | ✓ Small |
 | `/rag-mode on/off` | Auto-retrieve mode | ✓ When on |
-| `/rag-auto-index on/off` | Auto-index code files | — |
 | `/rag-rerank on/off` | Cross-encoder rerank | — |
 | `/rag-dynamic-top-k on/off` | Dynamic top_k (auto-reduce chunk count when context is nearly full) | — |
 | `/rag-verbose on/off` | Retrieval observability logs | — |
@@ -403,12 +384,10 @@ claude-local-rag/
 └── .claude/
     ├── settings.json           # Hook configuration
     ├── hook_script.py          # UserPromptSubmit Hook
-    ├── auto_index_hook.py      # PostToolUse Hook (auto-index code)
     └── commands/               # Slash command definitions
         ├── rag.md
         ├── rag-retrieve.md
         ├── rag-mode.md
-        ├── rag-auto-index.md
         └── ...
 ```
 
@@ -431,7 +410,6 @@ claude-local-rag/
 
 - [x] Source-based management (ingest / update / delete)
 - [x] Feishu docs, local files, plain text ingestion
-- [x] Auto-index code files (PostToolUse Hook)
 - [x] Embedding cache (skip re-encoding identical content, speeds up repeated ingestion)
 - [ ] Scheduled re-indexing (watch file changes, auto-trigger `/rag-update`)
 - [x] Export / Import (backup `index.bin` + `chunks.pkl` and migrate)

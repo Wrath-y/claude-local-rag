@@ -88,24 +88,6 @@ cd claude-local-rag
 
 ---
 
-### 🤖 代码自动入库
-
-开启后，Claude 每次读取或修改源码文件时自动同步向量库：
-
-```bash
-/rag-auto-index on    # 开启（持久化）
-/rag-auto-index off   # 关闭
-```
-
-| 操作 | 行为 |
-|------|------|
-| Claude 读取源码文件 | 自动入库（去重） |
-| Claude 编辑源码文件 | 自动删旧 chunks + 重新入库 |
-
-> 仅处理 `.py` `.ts` `.go` `.java` `.rs` 等源码文件，跳过 > 100KB 文件。
-
----
-
 ### 🔄 更新文档
 
 文档变更后重新同步，一条命令替代「删除 + 重新入库」两步：
@@ -149,7 +131,6 @@ cd claude-local-rag
 | `/rag-update <链接或路径> [--source <名称>]` | 更新来源（删旧 + 重新入库），`--source` 需与入库时一致 | — |
 | `/rag-retrieve <问题>` | 主动检索 | ✓ 少量 |
 | `/rag-mode on/off` | 自动检索模式 | ✓ 开启时 |
-| `/rag-auto-index on/off` | 代码自动入库 | — |
 | `/rag-rerank on/off` | rerank 精排 | — |
 | `/rag-verbose on/off` | 检索可观测性日志 | — |
 | `/rag-status` | 服务状态 + chunk 总数 | — |
@@ -240,11 +221,9 @@ claude-local-rag/
 └── .claude/
     ├── settings.json           # Hook 配置
     ├── hook_script.py          # UserPromptSubmit Hook
-    ├── auto_index_hook.py      # PostToolUse Hook（代码自动入库）
     └── commands/               # 斜杠命令定义
         ├── rag.md
         ├── rag-retrieve.md
         ├── rag-mode.md
-        ├── rag-auto-index.md
         └── ...
 ```

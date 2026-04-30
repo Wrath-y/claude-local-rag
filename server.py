@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 import zipfile
+from datetime import datetime
 import numpy as np
 import faiss
 import yaml
@@ -20,6 +21,7 @@ from typing import List, Dict, Optional
 import storage
 import wal as wal_mod
 import metrics
+import backup
 from obs import structured_log
 
 # ================= CONFIG =================
@@ -47,6 +49,15 @@ WAL_ENABLED: bool = bool(_wal_cfg.get("enabled", True))
 WAL_MAX_SIZE_BYTES: int = int(float(_wal_cfg.get("max_size_mb", 10)) * 1024 * 1024)
 
 DISK_FREE_ERROR_BYTES: int = 1 * 1024 * 1024 * 1024  # /health → error if free < 1GB
+
+_backup_cfg = config["storage"].get("backup", {})
+BACKUP_ENABLED: bool = bool(_backup_cfg.get("enabled", True))
+BACKUP_CRON: str = str(_backup_cfg.get("schedule", "0 3 * * *"))
+_retention = _backup_cfg.get("retention", {})
+BACKUP_RETENTION_DAYS: int = int(_retention.get("days", 7))
+BACKUP_RETENTION_WEEKS: int = int(_retention.get("weeks", 4))
+BACKUPS_DIR: str = os.path.join(_dir, "backups")
+_backup_timer = None  # threading.Timer handle
 
 
 def _safe_disk_free() -> int:
@@ -171,6 +182,162 @@ def rebuild_bm25():
         bm25 = BM25Okapi(corpus)
     else:
         bm25 = None
+
+
+def _backup_members():
+    """Members to include in every backup / restore."""
+    return [
+        backup.MemberSpec(arcname="chunks.pkl", abs_path=TEXTS_PATH),
+        backup.MemberSpec(arcname="index.bin", abs_path=INDEX_PATH),
+        backup.MemberSpec(arcname="storage/manifest.json", abs_path=MANIFEST_PATH),
+        backup.MemberSpec(arcname="storage/wal.jsonl", abs_path=WAL_PATH),
+    ]
+
+
+def _backup_run_core(name_override: "Optional[str]" = None) -> dict:
+    """Pack the four files to a zip under BACKUPS_DIR. Caller MUST hold write_lock.
+
+    Returns `{status, path, size_bytes}`.
+    """
+    if name_override:
+        dst = os.path.join(BACKUPS_DIR, name_override)
+    else:
+        now = datetime.now()
+        day_dir = os.path.join(BACKUPS_DIR, now.strftime("%Y-%m-%d"))
+        dst = os.path.join(day_dir, f"rag-{now.strftime('%H%M%S-%f')}.zip")
+    size = backup.make_backup(_backup_members(), dst)
+    metrics.backup_total.inc()
+    metrics.last_backup_timestamp_seconds.set(time.time())
+    structured_log("backup_done", path=dst, size_bytes=size)
+    return {"status": "ok", "path": dst, "size_bytes": size}
+
+
+def _prune_backups():
+    try:
+        deleted = backup.prune(BACKUPS_DIR, BACKUP_RETENTION_DAYS, BACKUP_RETENTION_WEEKS)
+        if deleted:
+            structured_log("backup_pruned", count=len(deleted))
+    except Exception as e:
+        print(f"[backup] prune failed: {e}")
+
+
+def _restore_core(zip_path: str) -> dict:
+    """Restore from a zip with transactional pre-restore snapshot + rollback."""
+    global _wal_readonly_reason
+    import shutil as _shutil
+    import tempfile
+
+    if not os.path.isfile(zip_path):
+        raise HTTPException(status_code=404, detail=f"backup not found: {zip_path}")
+
+    _wal_readonly_reason = "restore in progress"
+    try:
+        with storage.write_lock():
+            # 1. Snapshot current state first
+            pre_restore_name = f"pre-restore-{int(time.time())}.zip"
+            pre_restore_path = os.path.join(BACKUPS_DIR, pre_restore_name)
+            backup.make_backup(_backup_members(), pre_restore_path)
+
+            # 2. Extract target zip to staging
+            staging = tempfile.mkdtemp(prefix="rag_restore_", dir=DATA_DIR)
+            try:
+                extracted = backup.restore_from(zip_path, staging)
+
+                # 3. Atomic replace each target file
+                mapping = {
+                    "chunks.pkl": TEXTS_PATH,
+                    "index.bin": INDEX_PATH,
+                    "storage/manifest.json": MANIFEST_PATH,
+                    "storage/wal.jsonl": WAL_PATH,
+                }
+                for arc, target in mapping.items():
+                    src = os.path.join(staging, arc)
+                    if os.path.exists(src):
+                        os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+                        os.replace(src, target)
+                    else:
+                        # If the backup predates a file (e.g. WAL didn't exist yet),
+                        # truncate/remove the current one so the post-restore state
+                        # matches the backup's intent. Keeping stale content here
+                        # would silently leak post-backup writes through WAL replay.
+                        if arc == "storage/wal.jsonl" and os.path.exists(target):
+                            wal_mod.truncate_atomic(target)
+                        elif arc == "storage/manifest.json" and os.path.exists(target):
+                            os.remove(target)
+
+                # 4. Reload — failure triggers rollback
+                load_store()
+            except Exception:
+                # Rollback from pre-restore snapshot
+                print("[restore] reload failed, rolling back from pre-restore snapshot")
+                try:
+                    rollback_staging = tempfile.mkdtemp(prefix="rag_rollback_", dir=DATA_DIR)
+                    backup.restore_from(pre_restore_path, rollback_staging)
+                    for arc, target in mapping.items():
+                        src = os.path.join(rollback_staging, arc)
+                        if os.path.exists(src):
+                            os.replace(src, target)
+                    load_store()
+                    _wal_readonly_reason = "restore failed, rolled back — see logs"
+                finally:
+                    try:
+                        _shutil.rmtree(rollback_staging, ignore_errors=True)
+                    except Exception:
+                        pass
+                raise
+            finally:
+                try:
+                    _shutil.rmtree(staging, ignore_errors=True)
+                except Exception:
+                    pass
+
+            _wal_readonly_reason = None
+            return {"status": "ok", "pre_restore": pre_restore_path, "restored_entries": extracted}
+    finally:
+        # If something set _wal_readonly_reason to "restore in progress" and we didn't clear it,
+        # leave it as-is so operator sees the failure.
+        pass
+
+
+def _schedule_next_backup():
+    """Register a one-shot Timer for the next cron fire; on fire run backup and re-schedule."""
+    global _backup_timer
+    if not BACKUP_ENABLED:
+        return
+    try:
+        next_fire_fn = backup.parse_cron(BACKUP_CRON)
+        next_ts = next_fire_fn(time.time())
+        delay = max(1.0, next_ts - time.time())
+    except Exception as e:
+        print(f"[backup] failed to parse cron {BACKUP_CRON!r}: {e}")
+        return
+
+    import threading as _threading
+
+    def _fire():
+        global _backup_timer
+        try:
+            with storage.write_lock():
+                _backup_run_core()
+                _prune_backups()
+        except Exception as e:
+            print(f"[backup] scheduled run failed: {e}")
+        # Re-schedule next one regardless of success
+        _schedule_next_backup()
+
+    _backup_timer = _threading.Timer(delay, _fire)
+    _backup_timer.daemon = True
+    _backup_timer.start()
+
+
+def _cancel_backup_timer():
+    global _backup_timer
+    if _backup_timer is not None:
+        try:
+            _backup_timer.cancel()
+        except Exception:
+            pass
+        _backup_timer = None
 
 
 def _rebuild_index_core(chunks_list, batch_size: int = 64):
@@ -538,9 +705,14 @@ def _bigrams(s: str) -> List[str]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     load_store()
+    if BACKUP_ENABLED:
+        os.makedirs(BACKUPS_DIR, exist_ok=True)
+        _prune_backups()
+        _schedule_next_backup()
     print(_t("service_ready", port=config['server']['port']))
     yield
     # Clean-shutdown checkpoint so the next start has nothing to replay.
+    _cancel_backup_timer()
     if WAL_ENABLED and _wal_readonly_reason is None:
         try:
             with storage.write_lock():
@@ -945,6 +1117,32 @@ def health():
 def metrics_endpoint():
     from fastapi.responses import Response
     return Response(content=metrics.render(), media_type=metrics.content_type)
+
+
+@app.post("/backup/run")
+def backup_run_endpoint():
+    _assert_writable()
+    with storage.write_lock():
+        result = _backup_run_core()
+        _prune_backups()
+    return result
+
+
+@app.get("/backup/list")
+def backup_list_endpoint():
+    return backup.list_backups(BACKUPS_DIR)
+
+
+class RestoreRequest(BaseModel):
+    file: str
+    confirm: bool = False
+
+
+@app.post("/backup/restore")
+def backup_restore_endpoint(req: RestoreRequest):
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required for destructive restore")
+    return _restore_core(req.file)
 
 
 @app.post("/index/rebuild")

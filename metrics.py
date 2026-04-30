@@ -75,6 +75,18 @@ reindex_progress_ratio = Gauge(
     registry=registry,
 )
 
+backup_total = Counter(
+    "rag_backup_total",
+    "Total number of successful backups since process start.",
+    registry=registry,
+)
+
+last_backup_timestamp_seconds = Gauge(
+    "rag_last_backup_timestamp_seconds",
+    "Unix timestamp of the most recent successful backup.",
+    registry=registry,
+)
+
 
 def render() -> bytes:
     """Return Prometheus text format bytes suitable for /metrics."""

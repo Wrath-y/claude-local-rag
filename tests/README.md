@@ -32,6 +32,9 @@ tests/
 │   ├── test_index_status_endpoint.py
 │   ├── test_rebuild_metric.py
 │   └── test_dim_mismatch_degradation.py
+├── backup-restore-automation/
+│   ├── test_backup_unit.py
+│   └── test_backup_endpoints.py
 └── <next-change>/                    # Future changes follow the same pattern
     └── test_*.py
 ```
@@ -92,6 +95,9 @@ tests/
 │   ├── test_index_status_endpoint.py
 │   ├── test_rebuild_metric.py
 │   └── test_dim_mismatch_degradation.py
+├── backup-restore-automation/
+│   ├── test_backup_unit.py
+│   └── test_backup_endpoints.py
 └── <next-change>/                    # 后续 change 按此模式新建子目录
     └── test_*.py
 ```

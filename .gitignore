@@ -2,6 +2,7 @@
 index.bin
 chunks.pkl
 storage/
+backups/
 
 # 原子写残留（崩溃后启动自动清理；此处兜底）
 *.tmp

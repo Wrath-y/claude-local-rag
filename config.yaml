@@ -26,6 +26,12 @@ storage:
   wal:
     enabled: true       # WAL 开关；false 时回退到无 replay 行为
     max_size_mb: 10     # 超过此大小触发 checkpoint 并截断 WAL
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"    # cron：每天本地时间 03:00 自动备份
+    retention:
+      days: 7                # 过去 N 天每天保留 1 份
+      weeks: 4               # 过去 M 周每周保留 1 份
 
 log:
   lang: "en"   # 日志语言：zh（中文）或 en（English）

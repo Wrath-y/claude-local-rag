@@ -220,6 +220,20 @@ curl http://127.0.0.1:8765/storage/integrity-check
 - `GET /index/status` — 返回 `{state: "normal"|"read-only"|"rebuilding", progress_ratio?: float}`
 - 进度指标：`rag_reindex_progress_ratio` gauge
 
+### 备份与恢复
+
+默认每日本地时间 03:00 自动备份 `chunks.pkl` + `index.bin` + `storage/manifest.json` + `storage/wal.jsonl` 到 `backups/YYYY-MM-DD/rag-HHMMSS-<us>.zip`。
+
+| 端点 | 用途 |
+|------|------|
+| `POST /backup/run` | 立即触发一次备份，返回 `{path, size_bytes}` |
+| `GET /backup/list` | 列出 `backups/` 所有 zip，按修改时间倒序 |
+| `POST /backup/restore` body `{file, confirm: true}` | 原子恢复：先生成 `pre-restore-<ts>.zip`，再替换四件套 + `load_store()`；失败自动回滚 |
+
+保留策略：最近 `storage.backup.retention.days` 天每天 1 份 + 最近 `.weeks` 周每周 1 份，其他自动清理；`pre-restore-*.zip` 永不删除。
+
+`storage.backup.enabled: false` 关闭定时与自动清理，`/backup/*` 端点仍可手动调用。指标：`rag_backup_total`（counter）、`rag_last_backup_timestamp_seconds`（gauge）。
+
 ### 真实场景示例
 
 团队将内部 API 文档、接口规范、上线 checklist 存入向量库，开启 `rag-mode on`。

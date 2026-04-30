@@ -69,6 +69,12 @@ last_commit_timestamp_seconds = Gauge(
     registry=registry,
 )
 
+reindex_progress_ratio = Gauge(
+    "rag_reindex_progress_ratio",
+    "Progress of an in-flight FAISS index rebuild (0-1). 0 when not rebuilding.",
+    registry=registry,
+)
+
 
 def render() -> bytes:
     """Return Prometheus text format bytes suitable for /metrics."""

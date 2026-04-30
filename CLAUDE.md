@@ -207,6 +207,19 @@ curl http://127.0.0.1:8765/storage/integrity-check
 
 关键事件（ingest/retrieve/WAL replay/checkpoint 完成）通过 `structured_log` 以单行 JSON 发到 stdout，可被 `jq`、Vector、Fluent Bit 直接消费。
 
+### 索引自愈
+
+| 场景 | 行为 |
+|------|------|
+| `chunks.pkl` 存在、`index.bin` 缺失 | 启动自动从 chunks 重建索引，无需人工干预 |
+| 索引维度 ≠ 当前模型维度 | 进入只读降级；检索仍可用（旧索引），写入返回 503。手动调用 `POST /index/rebuild` 后台重建 |
+| `chunks.pkl` / `index.bin` 数量不一致 | 拒绝启动（由 concurrent-safe-storage 的 manifest 校验负责） |
+
+运维端点：
+- `POST /index/rebuild` — 异步重建，立即返回 `{status: "started"}`
+- `GET /index/status` — 返回 `{state: "normal"|"read-only"|"rebuilding", progress_ratio?: float}`
+- 进度指标：`rag_reindex_progress_ratio` gauge
+
 ### 真实场景示例
 
 团队将内部 API 文档、接口规范、上线 checklist 存入向量库，开启 `rag-mode on`。

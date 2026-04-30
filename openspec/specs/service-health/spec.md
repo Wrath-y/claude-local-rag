@@ -6,15 +6,26 @@
 
 ### Requirement: /health 三态响应
 
-`GET /health` SHALL 返回 `status` 字段取值之一：`"ok"` / `"degraded"` / `"error"`。判定顺序：`DATA_DIR` 磁盘可用字节 < 1GB → `error` 且 HTTP 503；`_wal_readonly_reason` 非 null → `degraded` 且 HTTP 200；`_wal_replaying == True` → `degraded` 且 HTTP 200；否则 `ok` 且 HTTP 200。响应 MUST 保留字段 `total_chunks`、`rerank_enabled`、`verbose_enabled`、`wal_replaying`、`wal_readonly_reason`，并新增 `disk_free_bytes`、`reason`（当 status != ok 时说明原因）。
+`GET /health` SHALL 返回 `status` 字段取值之一：`"ok"` / `"degraded"` / `"error"`。判定顺序：`DATA_DIR` 磁盘可用字节 < 1GB → `error` 且 HTTP 503；索引正在 rebuild（`_index_rebuilding == True`）→ `degraded` + 原因 `"index rebuild in progress"`；`_wal_readonly_reason` 非 null（涵盖 WAL 坏行、索引维度不匹配、rebuild 触发等）→ `degraded` + 对应 reason；`_wal_replaying == True` → `degraded` + `"wal replay in progress"`；否则 `ok`。响应 MUST 保留字段 `total_chunks`、`rerank_enabled`、`verbose_enabled`、`wal_replaying`、`wal_readonly_reason`、`disk_free_bytes`，并新增 `index_rebuilding`（bool）与 `index_state`（同 `/index/status` 的 state 字段）。
+
+> 首次引入: health-metrics-observability (2026-04-30)；index_rebuilding / index_state 字段由 index-self-healing (2026-04-30) 追加。
 
 #### Scenario: 正常状态返回 ok
 
-- **WHEN** 磁盘可用 > 1GB 且无 WAL 降级或 replay 中
+- **WHEN** 磁盘可用 > 1GB 且无 WAL 降级、无 rebuild、无 replay
 - **AND** 调用 `GET /health`
 - **THEN** 响应 HTTP 200
 - **AND** body `status == "ok"`
 - **AND** body `reason == null`
+- **AND** body `index_rebuilding == false`
+
+#### Scenario: rebuild 进行中返回 degraded
+
+- **WHEN** 后台 rebuild 线程正在执行
+- **AND** 调用 `GET /health`
+- **THEN** 响应 HTTP 200
+- **AND** body `status == "degraded"`
+- **AND** body `index_rebuilding == true`
 
 #### Scenario: WAL 坏行降级返回 degraded
 

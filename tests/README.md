@@ -26,6 +26,12 @@ tests/
 │   ├── test_health_states.py
 │   ├── test_structured_log.py
 │   └── test_integrity_disk_free.py
+├── index-self-healing/
+│   ├── test_startup_index_missing.py
+│   ├── test_rebuild_endpoint.py
+│   ├── test_index_status_endpoint.py
+│   ├── test_rebuild_metric.py
+│   └── test_dim_mismatch_degradation.py
 └── <next-change>/                    # Future changes follow the same pattern
     └── test_*.py
 ```
@@ -80,6 +86,12 @@ tests/
 │   ├── test_health_states.py
 │   ├── test_structured_log.py
 │   └── test_integrity_disk_free.py
+├── index-self-healing/
+│   ├── test_startup_index_missing.py
+│   ├── test_rebuild_endpoint.py
+│   ├── test_index_status_endpoint.py
+│   ├── test_rebuild_metric.py
+│   └── test_dim_mismatch_degradation.py
 └── <next-change>/                    # 后续 change 按此模式新建子目录
     └── test_*.py
 ```

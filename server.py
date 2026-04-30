@@ -137,6 +137,10 @@ _wal_replaying: bool = False
 _wal_readonly_reason: "Optional[str]" = None  # type: ignore[name-defined]
 _wal_next_seq: int = 0  # incremented on every append
 
+# Index rebuild state
+_index_rebuilding: bool = False
+_index_rebuild_progress: float = 0.0
+
 # ================= STORAGE =================
 def encode_with_cache(texts: List[str]) -> np.ndarray:
     """Encode texts with DOC_PREFIX, returning cache hits instantly and batching misses."""
@@ -167,6 +171,72 @@ def rebuild_bm25():
         bm25 = BM25Okapi(corpus)
     else:
         bm25 = None
+
+
+def _rebuild_index_core(chunks_list, batch_size: int = 64):
+    """Rebuild a FAISS index from chunks by re-encoding in batches.
+
+    Updates _index_rebuild_progress and the reindex metric each batch.
+    Returns the new IndexFlatIP (caller swaps the global ref under write lock).
+    """
+    global _index_rebuild_progress
+    new_index = faiss.IndexFlatIP(DIM)
+    total = len(chunks_list)
+    if total == 0:
+        _index_rebuild_progress = 1.0
+        metrics.reindex_progress_ratio.set(1.0)
+        return new_index
+
+    texts = [c["text"] for c in chunks_list]
+    encoded = 0
+    for i in range(0, total, batch_size):
+        batch = texts[i : i + batch_size]
+        prefixed = [f"{DOC_PREFIX}{t}" for t in batch]
+        vecs = model.encode(prefixed, normalize_embeddings=True, show_progress_bar=False)
+        vecs = np.array(vecs, dtype=np.float32)
+        new_index.add(vecs)
+        # Refresh embedding cache with freshly computed vectors
+        for j, t in enumerate(batch):
+            _emb_cache[t] = vecs[j]
+        encoded += len(batch)
+        _index_rebuild_progress = encoded / total
+        metrics.reindex_progress_ratio.set(_index_rebuild_progress)
+    return new_index
+
+
+def _rebuild_index_sync():
+    """Startup self-heal path: rebuild from in-memory stored_chunks synchronously."""
+    global index
+    new_index = _rebuild_index_core(stored_chunks)
+    storage.atomic_write_faiss(INDEX_PATH, new_index)
+    index = new_index
+    save_store(new_index=new_index, new_chunks=stored_chunks,
+               wal_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+               wal_seq=_wal_next_seq)
+    print(f"[index] rebuilt from {len(stored_chunks)} chunks")
+
+
+def _rebuild_index_async():
+    """Background rebuild triggered by POST /index/rebuild."""
+    global index, _index_rebuilding, _wal_readonly_reason, _index_rebuild_progress
+    try:
+        with storage.write_lock():
+            new_index = _rebuild_index_core(stored_chunks)
+            save_store(new_index=new_index, new_chunks=stored_chunks,
+                       wal_offset=wal_mod.file_size(WAL_PATH) if WAL_ENABLED else 0,
+                       wal_seq=_wal_next_seq)
+            index = new_index
+        print(f"[index] rebuild completed, ntotal={new_index.ntotal}")
+    except Exception as e:
+        print(f"[index] rebuild failed: {e}")
+        _wal_readonly_reason = f"index rebuild failed: {e}"
+    finally:
+        _index_rebuilding = False
+        _index_rebuild_progress = 0.0
+        metrics.reindex_progress_ratio.set(0.0)
+        # If readonly reason was set by rebuild kickoff AND rebuild succeeded, clear it.
+        if _wal_readonly_reason == "index rebuild in progress":
+            _wal_readonly_reason = None
 
 
 def _apply_wal_record(record) -> None:
@@ -254,8 +324,30 @@ def load_store():
     if removed:
         print(f"[storage] cleaned orphan tempfiles: {[os.path.basename(p) for p in removed]}")
 
+    # Self-heal: chunks present but index missing → sync rebuild from texts.
+    if os.path.exists(TEXTS_PATH) and not os.path.exists(INDEX_PATH):
+        with open(TEXTS_PATH, "rb") as f:
+            raw = pickle.load(f)
+        if raw and isinstance(raw[0], str):
+            stored_chunks = [{"text": t, "source": "unknown"} for t in raw]
+        else:
+            stored_chunks = raw
+        chunk_set = set(c["text"] for c in stored_chunks)
+        index = faiss.IndexFlatIP(DIM)
+        print(f"[index] index.bin missing, rebuilding from {len(stored_chunks)} chunks")
+        _rebuild_index_sync()
+        rebuild_bm25()
+        return
+
     if os.path.exists(INDEX_PATH) and os.path.exists(TEXTS_PATH):
+        global _wal_readonly_reason
         index = faiss.read_index(INDEX_PATH)
+        # Dim mismatch degrades to read-only (old index still serves retrieves).
+        if index.d != DIM:
+            _wal_readonly_reason = (
+                f"index dim mismatch: expected={DIM}, actual={index.d} — run /index/rebuild"
+            )
+            print(f"[index] {_wal_readonly_reason}")
         with open(TEXTS_PATH, "rb") as f:
             raw = pickle.load(f)
         # 向后兼容：旧版存储为 List[str]，迁移为 List[Dict]
@@ -303,11 +395,13 @@ def load_store():
         _replay_wal_if_needed(manifest)
 
         # 从 FAISS 向量直接恢复 embedding 缓存，避免 delete_source 重建索引时重复 encode
+        # Dim mismatch 时跳过：reconstruct 的缓冲区与 index.d 不匹配，会损坏内存。
         _emb_cache.clear()
-        for i, chunk in enumerate(stored_chunks):
-            vec = np.zeros(DIM, dtype=np.float32)
-            index.reconstruct(i, vec)
-            _emb_cache[chunk["text"]] = vec
+        if index.d == DIM:
+            for i, chunk in enumerate(stored_chunks):
+                vec = np.zeros(DIM, dtype=np.float32)
+                index.reconstruct(i, vec)
+                _emb_cache[chunk["text"]] = vec
         # 重建 source → hash 映射（Plan A 跳过相同内容重复入库）
         for chunk in stored_chunks:
             h = chunk.get("source_hash", "")
@@ -806,6 +900,10 @@ def health():
         status_value = "error"
         reason = f"disk free {free_bytes} bytes below threshold {DISK_FREE_ERROR_BYTES}"
         http_code = 503
+    elif _index_rebuilding:
+        status_value = "degraded"
+        reason = "index rebuild in progress"
+        http_code = 200
     elif _wal_readonly_reason is not None:
         status_value = "degraded"
         reason = _wal_readonly_reason
@@ -819,6 +917,13 @@ def health():
         reason = None
         http_code = 200
 
+    if _index_rebuilding:
+        index_state = "rebuilding"
+    elif _wal_readonly_reason is not None:
+        index_state = "read-only"
+    else:
+        index_state = "normal"
+
     body = {
         "status": status_value,
         "reason": reason,
@@ -828,6 +933,8 @@ def health():
         "wal_replaying": _wal_replaying,
         "wal_readonly_reason": _wal_readonly_reason,
         "disk_free_bytes": free_bytes,
+        "index_rebuilding": _index_rebuilding,
+        "index_state": index_state,
     }
     if http_code == 200:
         return body
@@ -838,6 +945,33 @@ def health():
 def metrics_endpoint():
     from fastapi.responses import Response
     return Response(content=metrics.render(), media_type=metrics.content_type)
+
+
+@app.post("/index/rebuild")
+def index_rebuild_endpoint():
+    global _index_rebuilding, _wal_readonly_reason, _index_rebuild_progress
+    import threading as _threading
+    if _index_rebuilding:
+        raise HTTPException(status_code=409, detail="rebuild already in progress")
+    _index_rebuilding = True
+    _index_rebuild_progress = 0.0
+    _wal_readonly_reason = "index rebuild in progress"
+    t = _threading.Thread(target=_rebuild_index_async, daemon=True)
+    t.start()
+    return {"status": "started", "total_chunks": len(stored_chunks)}
+
+
+@app.get("/index/status")
+def index_status_endpoint():
+    if _index_rebuilding:
+        return {
+            "state": "rebuilding",
+            "progress_ratio": _index_rebuild_progress,
+            "reason": "index rebuild in progress",
+        }
+    if _wal_readonly_reason is not None:
+        return {"state": "read-only", "reason": _wal_readonly_reason}
+    return {"state": "normal"}
 
 
 # ================= STATS =================

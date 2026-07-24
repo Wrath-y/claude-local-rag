@@ -12,7 +12,7 @@ also returns:
 
 ```json
 {
-  "chunks": ["[1] [来源: redis.md]\\n..."],
+  "chunks": ["[1] [source marker: redis.md]\\n..."],
   "evidence_token": "opaque-short-lived-token",
   "citations": [{
     "id": 1,
@@ -26,6 +26,10 @@ also returns:
   }]
 }
 ```
+
+The `chunks` entries are display text. Clients should use the structured
+`citations` field, rather than parsing a localized source marker, whenever
+machine-readable provenance is required.
 
 The MCP `rag_retrieve` result exposes the same `chunks`, `citations`, and
 `evidence_token` fields. Callers may supply `title`, `uri`, and `location`

@@ -30,6 +30,7 @@ backups/
 
 # 测试
 .pytest_cache/
+.traces
 
 # Python
 __pycache__/

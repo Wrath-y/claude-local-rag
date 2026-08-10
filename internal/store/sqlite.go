@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,16 +11,27 @@ import (
 	_ "modernc.org/sqlite/vec"
 )
 
+// ErrGraphUnavailable marks an additive graph-schema initialization failure.
+// It never means the pre-existing local-RAG tables are unavailable.
+var ErrGraphUnavailable = errors.New("graph store unavailable")
+
 // Store wraps a SQLite database with the RAG schema.
 type Store struct {
-	db          *sql.DB
-	dims        int
-	feedbackKey []byte
+	db               *sql.DB
+	dims             int
+	feedbackKey      []byte
+	graphUnavailable error
 }
 
 // New opens (or creates) a SQLite database at dbPath, applies pragmas, and
 // ensures the chunks / vec_chunks / FTS5 schema is present.
 func New(dbPath string, dims int) (*Store, error) {
+	return newWithGraphMigrations(dbPath, dims, graphMigrations)
+}
+
+// newWithGraphMigrations exists so migration-failure behavior can be proven
+// without editing the production graph migration history in tests.
+func newWithGraphMigrations(dbPath string, dims int, migrations []graphMigration) (*Store, error) {
 	// 1. Create parent directory if needed.
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("store.New: create dir: %w", err)
@@ -99,9 +111,11 @@ END;
 		db.Close()
 		return nil, fmt.Errorf("store.New: migrate feedback schema: %w", err)
 	}
-	if err := runGraphMigrations(db, graphMigrations); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("store.New: initialize graph migration ledger: %w", err)
+	var graphUnavailable error
+	if err := runGraphMigrations(db, migrations); err != nil {
+		graphUnavailable = fmt.Errorf("%w: %v", ErrGraphUnavailable, err)
+	} else if err := ensureGraphVectorStorage(db, dims); err != nil {
+		graphUnavailable = fmt.Errorf("%w: %v", ErrGraphUnavailable, err)
 	}
 	key, err := loadOrCreateFeedbackKey(dbPath)
 	if err != nil {
@@ -109,7 +123,7 @@ END;
 		return nil, fmt.Errorf("store.New: initialize feedback key: %w", err)
 	}
 
-	return &Store{db: db, dims: dims, feedbackKey: key}, nil
+	return &Store{db: db, dims: dims, feedbackKey: key, graphUnavailable: graphUnavailable}, nil
 }
 
 // ensureChunkCitationColumns upgrades databases created before provenance was
@@ -163,6 +177,14 @@ func (s *Store) Close() error {
 // DB exposes the underlying *sql.DB for direct access by other packages.
 func (s *Store) DB() *sql.DB {
 	return s.db
+}
+
+// GraphUnavailable returns the retained initialization diagnostic when graph
+// storage could not be migrated or its sqlite-vec backing table could not be
+// initialized. Callers serving legacy chunk APIs can keep using the Store;
+// graph lifecycle adapters must surface their stable unavailable response.
+func (s *Store) GraphUnavailable() error {
+	return s.graphUnavailable
 }
 
 // Snapshot creates a consistent SQLite snapshot at destination.

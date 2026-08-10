@@ -1,0 +1,201 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
+)
+
+var (
+	// ErrGraphSnapshotNotFound is intentionally storage-level. The /v1
+	// lifecycle service maps it to its stable SNAPSHOT_NOT_FOUND response.
+	ErrGraphSnapshotNotFound = errors.New("graph snapshot not found")
+	ErrInvalidGraphIdentity  = errors.New("graph namespace and version are required")
+)
+
+// GraphSnapshotRecord is the complete immutable graph source for exactly one
+// namespace/version. It deliberately contains no selected derived index rows,
+// so delta materialization and later graph consumers cannot accidentally read
+// unscoped legacy data or private build state.
+type GraphSnapshotRecord struct {
+	Namespace     string
+	Version       string
+	BaseVersion   *string
+	SchemaVersion string
+	ContentHash   string
+	NodeCount     int
+	EdgeCount     int
+	TaskID        string
+	Status        graphsnapshot.SnapshotStatus
+	QueryReady    bool
+	Nodes         []graphsnapshot.Node
+	Edges         []graphsnapshot.Edge
+}
+
+// LookupGraphSnapshot builds the public lifecycle resource for an already
+// accepted snapshot. It is deliberately read-only and scoped so PUT replay
+// handling can decide before it attempts any delta materialization or writes.
+func (s *Store) LookupGraphSnapshot(ctx context.Context, namespace, version string) (graphsnapshot.Snapshot, bool, error) {
+	if namespace == "" || version == "" {
+		return graphsnapshot.Snapshot{}, false, ErrInvalidGraphIdentity
+	}
+	if err := s.GraphUnavailable(); err != nil {
+		return graphsnapshot.Snapshot{}, false, err
+	}
+	var snapshot graphsnapshot.Snapshot
+	var baseVersion sql.NullString
+	var queryReady int
+	err := s.db.QueryRowContext(ctx, `SELECT namespace,version,base_version,schema_version,content_hash,node_count,edge_count,task_id,status,query_ready FROM graph_snapshots WHERE namespace=? AND version=?`, namespace, version).Scan(
+		&snapshot.Namespace,
+		&snapshot.Version,
+		&baseVersion,
+		&snapshot.SchemaVersion,
+		&snapshot.ContentHash,
+		&snapshot.NodeCount,
+		&snapshot.EdgeCount,
+		&snapshot.TaskID,
+		&snapshot.Status,
+		&queryReady,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return graphsnapshot.Snapshot{}, false, nil
+	}
+	if err != nil {
+		return graphsnapshot.Snapshot{}, false, fmt.Errorf("lookup graph snapshot: %w", err)
+	}
+	if baseVersion.Valid {
+		value := baseVersion.String
+		snapshot.BaseVersion = &value
+	}
+	snapshot.QueryReady = queryReady == 1
+	rows, err := s.db.QueryContext(ctx, `SELECT component,state,generation,error_json,warning FROM graph_snapshot_components WHERE namespace=? AND version=? ORDER BY CASE component WHEN 'graph' THEN 0 WHEN 'fts' THEN 1 WHEN 'vector' THEN 2 ELSE 3 END`, namespace, version)
+	if err != nil {
+		return graphsnapshot.Snapshot{}, false, fmt.Errorf("lookup graph components: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var component graphsnapshot.Component
+		var generation sql.NullString
+		var errorJSON sql.NullString
+		var warning sql.NullString
+		if err := rows.Scan(&component.Name, &component.State, &generation, &errorJSON, &warning); err != nil {
+			return graphsnapshot.Snapshot{}, false, fmt.Errorf("scan graph component: %w", err)
+		}
+		if generation.Valid {
+			component.Generation = generation.String
+		}
+		if errorJSON.Valid {
+			var graphError graphsnapshot.Error
+			if err := json.Unmarshal([]byte(errorJSON.String), &graphError); err != nil {
+				return graphsnapshot.Snapshot{}, false, fmt.Errorf("decode graph component error: %w", err)
+			}
+			component.Error = &graphError
+		}
+		if warning.Valid && warning.String != "" {
+			snapshot.Warnings = append(snapshot.Warnings, warning.String)
+		}
+		snapshot.Components = append(snapshot.Components, component)
+	}
+	if err := rows.Err(); err != nil {
+		return graphsnapshot.Snapshot{}, false, fmt.Errorf("iterate graph components: %w", err)
+	}
+	return snapshot, true, nil
+}
+
+// ReadGraphSnapshot obtains a stable read transaction and loads the snapshot,
+// nodes, and edges with namespace and version predicates on every query.
+// Identical entity IDs in another project or version therefore cannot enter
+// this record even while other graph lifecycle work is writing to SQLite.
+func (s *Store) ReadGraphSnapshot(ctx context.Context, namespace, version string) (GraphSnapshotRecord, error) {
+	if namespace == "" || version == "" {
+		return GraphSnapshotRecord{}, ErrInvalidGraphIdentity
+	}
+	if err := s.GraphUnavailable(); err != nil {
+		return GraphSnapshotRecord{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("begin graph snapshot read: %w", err)
+	}
+	defer tx.Rollback()
+
+	var record GraphSnapshotRecord
+	var baseVersion sql.NullString
+	var queryReady int
+	err = tx.QueryRowContext(ctx, `SELECT namespace,version,base_version,schema_version,content_hash,node_count,edge_count,task_id,status,query_ready FROM graph_snapshots WHERE namespace=? AND version=?`, namespace, version).Scan(
+		&record.Namespace,
+		&record.Version,
+		&baseVersion,
+		&record.SchemaVersion,
+		&record.ContentHash,
+		&record.NodeCount,
+		&record.EdgeCount,
+		&record.TaskID,
+		&record.Status,
+		&queryReady,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GraphSnapshotRecord{}, ErrGraphSnapshotNotFound
+	}
+	if err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("read graph snapshot: %w", err)
+	}
+	if baseVersion.Valid {
+		value := baseVersion.String
+		record.BaseVersion = &value
+	}
+	record.QueryReady = queryReady == 1
+
+	nodes, err := tx.QueryContext(ctx, `SELECT node_id,node_type,label,text,properties_json,provenance_json FROM graph_nodes WHERE namespace=? AND version=? ORDER BY node_id`, namespace, version)
+	if err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("read graph nodes: %w", err)
+	}
+	for nodes.Next() {
+		var node graphsnapshot.Node
+		var properties, provenance []byte
+		if err := nodes.Scan(&node.ID, &node.Type, &node.Label, &node.Text, &properties, &provenance); err != nil {
+			nodes.Close()
+			return GraphSnapshotRecord{}, fmt.Errorf("scan graph node: %w", err)
+		}
+		node.Properties = append(json.RawMessage(nil), properties...)
+		node.Provenance = append(json.RawMessage(nil), provenance...)
+		record.Nodes = append(record.Nodes, node)
+	}
+	if err := nodes.Err(); err != nil {
+		nodes.Close()
+		return GraphSnapshotRecord{}, fmt.Errorf("iterate graph nodes: %w", err)
+	}
+	if err := nodes.Close(); err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("close graph nodes: %w", err)
+	}
+
+	edges, err := tx.QueryContext(ctx, `SELECT edge_id,from_node_id,to_node_id,edge_type,relation_kind,confidence,properties_json,provenance_json FROM graph_edges WHERE namespace=? AND version=? ORDER BY edge_id`, namespace, version)
+	if err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("read graph edges: %w", err)
+	}
+	for edges.Next() {
+		var edge graphsnapshot.Edge
+		var confidence string
+		var properties, provenance []byte
+		if err := edges.Scan(&edge.ID, &edge.From, &edge.To, &edge.Type, &edge.RelationKind, &confidence, &properties, &provenance); err != nil {
+			edges.Close()
+			return GraphSnapshotRecord{}, fmt.Errorf("scan graph edge: %w", err)
+		}
+		edge.Confidence = json.Number(confidence)
+		edge.Properties = append(json.RawMessage(nil), properties...)
+		edge.Provenance = append(json.RawMessage(nil), provenance...)
+		record.Edges = append(record.Edges, edge)
+	}
+	if err := edges.Err(); err != nil {
+		edges.Close()
+		return GraphSnapshotRecord{}, fmt.Errorf("iterate graph edges: %w", err)
+	}
+	if err := edges.Close(); err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("close graph edges: %w", err)
+	}
+	return record, nil
+}

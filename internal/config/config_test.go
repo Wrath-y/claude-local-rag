@@ -174,6 +174,17 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsInvalidGraphConfig(t *testing.T) {
+	p := writeTemp(t, "graph:\n  max_nodes: -1\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("Load accepted invalid graph.max_nodes")
+	}
+	p = writeTemp(t, "graph:\n  search_document_format: unstable\n")
+	if _, err := Load(p); err == nil {
+		t.Fatal("Load accepted invalid graph.search_document_format")
+	}
+}
+
 // TestLoadConfig_FullFile loads a complete YAML file and verifies that every
 // value is parsed exactly — no field falls back to a default.
 func TestLoadConfig_FullFile(t *testing.T) {

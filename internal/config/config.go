@@ -22,6 +22,7 @@ type Config struct {
 	Sync         SyncConfig         `yaml:"sync"`
 	Connectors   ConnectorConfig    `yaml:"connectors"`
 	Feedback     FeedbackConfig     `yaml:"feedback"`
+	Graph        GraphConfig        `yaml:"graph"`
 	Log          LogConfig          `yaml:"log"`
 }
 
@@ -197,6 +198,15 @@ type FeedbackConfig struct {
 	CandidateConversionMax int  `yaml:"candidate_conversion_max"`
 }
 
+// GraphConfig bounds the additive graph lifecycle without changing legacy
+// chunk/retrieval defaults. These values are ceilings, not request overrides.
+type GraphConfig struct {
+	MaxPayloadBytes      int    `yaml:"max_payload_bytes"`
+	MaxNodes             int    `yaml:"max_nodes"`
+	MaxEdges             int    `yaml:"max_edges"`
+	SearchDocumentFormat string `yaml:"search_document_format"`
+}
+
 // LogConfig holds logging settings.
 type LogConfig struct {
 	Level  string `yaml:"level"`
@@ -242,6 +252,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Feedback.RetentionDays < 1 || cfg.Feedback.QueryExcerptMaxChars < 1 || cfg.Feedback.NoteMaxChars < 1 || cfg.Feedback.ReviewNoteMaxChars < 1 || cfg.Feedback.ExportMaxRecords < 1 || cfg.Feedback.CandidateConversionMax < 1 {
 		return fmt.Errorf("config: feedback limits and retention_days must be positive")
+	}
+	if cfg.Graph.MaxPayloadBytes < 1 || cfg.Graph.MaxNodes < 1 || cfg.Graph.MaxEdges < 1 || cfg.Graph.SearchDocumentFormat != "graph-search-v1" {
+		return fmt.Errorf("config: graph limits or search_document_format are invalid")
 	}
 	return nil
 }
@@ -473,6 +486,19 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Feedback.CandidateConversionMax == 0 {
 		cfg.Feedback.CandidateConversionMax = 1000
+	}
+
+	if cfg.Graph.MaxPayloadBytes == 0 {
+		cfg.Graph.MaxPayloadBytes = 32 << 20
+	}
+	if cfg.Graph.MaxNodes == 0 {
+		cfg.Graph.MaxNodes = 10000
+	}
+	if cfg.Graph.MaxEdges == 0 {
+		cfg.Graph.MaxEdges = 100000
+	}
+	if cfg.Graph.SearchDocumentFormat == "" {
+		cfg.Graph.SearchDocumentFormat = "graph-search-v1"
 	}
 
 	// Log

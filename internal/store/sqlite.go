@@ -99,7 +99,7 @@ END;
 		db.Close()
 		return nil, fmt.Errorf("store.New: migrate feedback schema: %w", err)
 	}
-	if err := runGraphMigrations(db, nil); err != nil {
+	if err := runGraphMigrations(db, graphMigrations); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store.New: initialize graph migration ledger: %w", err)
 	}

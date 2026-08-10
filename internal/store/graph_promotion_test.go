@@ -70,4 +70,24 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	if snapshot, found, err := s.LookupGraphSnapshot(context.Background(), "project", "revision"); err != nil || !found || snapshot.Status != graphsnapshot.SnapshotReady || !snapshot.QueryReady {
 		t.Fatalf("snapshot=%#v found=%v err=%v", snapshot, found, err)
 	}
+	if _, err := s.DB().Exec(`UPDATE graph_tasks SET state='running',phase='vector' WHERE id='promotion-task'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO graph_vector_items(namespace,version,generation,entity_kind,entity_id,dimensions) VALUES('project','revision','private-crash','node','private-node',4)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecoverGraphTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var taskState string
+	if err := s.DB().QueryRow(`SELECT state FROM graph_tasks WHERE id='promotion-task'`).Scan(&taskState); err != nil || taskState != "queued" {
+		t.Fatalf("task state=%q err=%v", taskState, err)
+	}
+	var selected, private int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE generation='vector-promotion-task'`).Scan(&selected); err != nil || selected != 2 {
+		t.Fatalf("selected=%d err=%v", selected, err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE generation='private-crash'`).Scan(&private); err != nil || private != 0 {
+		t.Fatalf("private=%d err=%v", private, err)
+	}
 }

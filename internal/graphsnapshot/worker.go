@@ -12,6 +12,10 @@ type GraphTaskClaimer interface {
 	ClaimOldestQueuedGraphTask(context.Context) (Task, bool, error)
 }
 
+type GraphTaskRecovery interface {
+	RecoverGraphTasks(context.Context) error
+}
+
 type TaskDispatcher func(context.Context, Task) error
 
 // Start launches one graph-task worker. Calling it repeatedly is idempotent;
@@ -21,6 +25,11 @@ func (s *Service) Start(parent context.Context, dispatch TaskDispatcher) error {
 	claimer, ok := s.repository.(GraphTaskClaimer)
 	if !ok {
 		return fmt.Errorf("graph snapshot repository cannot claim tasks")
+	}
+	if recovery, ok := s.repository.(GraphTaskRecovery); ok {
+		if err := recovery.RecoverGraphTasks(parent); err != nil {
+			return fmt.Errorf("recover graph tasks: %w", err)
+		}
 	}
 	if dispatch == nil {
 		return fmt.Errorf("graph task dispatcher is required")

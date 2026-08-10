@@ -36,7 +36,8 @@ type raceSnapshotAccepterFake struct {
 
 type workerRepositoryFake struct {
 	snapshotAccepterFake
-	tasks chan Task
+	tasks     chan Task
+	recovered bool
 }
 
 func (f *workerRepositoryFake) ClaimOldestQueuedGraphTask(context.Context) (Task, bool, error) {
@@ -46,6 +47,10 @@ func (f *workerRepositoryFake) ClaimOldestQueuedGraphTask(context.Context) (Task
 	default:
 		return Task{}, false, nil
 	}
+}
+func (f *workerRepositoryFake) RecoverGraphTasks(context.Context) error {
+	f.recovered = true
+	return nil
 }
 
 func (f *raceSnapshotAccepterFake) LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error) {
@@ -155,6 +160,9 @@ func TestServiceWorkerWakeAndClose(t *testing.T) {
 	dispatched := make(chan Task, 1)
 	if err := service.Start(context.Background(), func(_ context.Context, task Task) error { dispatched <- task; return nil }); err != nil {
 		t.Fatal(err)
+	}
+	if !repository.recovered {
+		t.Fatal("worker started before recovery")
 	}
 	if err := service.Start(context.Background(), func(context.Context, Task) error { t.Fatal("second worker dispatch"); return nil }); err != nil {
 		t.Fatal(err)

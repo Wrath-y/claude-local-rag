@@ -7,6 +7,16 @@ import (
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
 
+type graphEmbedderFake struct{}
+
+func (graphEmbedderFake) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		vectors[i] = []float32{1, 0, 0, 0}
+	}
+	return vectors, nil
+}
+
 func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	s, err := New(t.TempDir()+"/rag.db", 4)
 	if err != nil {
@@ -46,5 +56,18 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	}
 	if err := s.DB().QueryRow(`SELECT state FROM graph_snapshot_components WHERE namespace='project' AND version='revision' AND component='fts'`).Scan(&state); err != nil || state != "ready" {
 		t.Fatalf("fts state=%q err=%v", state, err)
+	}
+	if err := s.BuildGraphVectors(context.Background(), "promotion-task", graphEmbedderFake{}); err != nil {
+		t.Fatal(err)
+	}
+	var vectors int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE namespace='project' AND version='revision'`).Scan(&vectors); err != nil || vectors != 2 {
+		t.Fatalf("vectors=%d err=%v", vectors, err)
+	}
+	if err := s.DB().QueryRow(`SELECT state FROM graph_snapshot_components WHERE namespace='project' AND version='revision' AND component='vector'`).Scan(&state); err != nil || state != "ready" {
+		t.Fatalf("vector state=%q err=%v", state, err)
+	}
+	if snapshot, found, err := s.LookupGraphSnapshot(context.Background(), "project", "revision"); err != nil || !found || snapshot.Status != graphsnapshot.SnapshotReady || !snapshot.QueryReady {
+		t.Fatalf("snapshot=%#v found=%v err=%v", snapshot, found, err)
 	}
 }

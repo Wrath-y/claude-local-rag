@@ -54,5 +54,8 @@ func (s *Store) PopulateGraphSearchDocuments(ctx context.Context, taskID string)
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='ready' WHERE namespace=? AND version=? AND component='fts'`, namespace, version); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.ReconcileGraphSnapshot(ctx, namespace, version)
 }

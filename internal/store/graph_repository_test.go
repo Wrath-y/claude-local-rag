@@ -128,6 +128,55 @@ func TestConcurrentSameVersionSubmissionKeepsOneSnapshotAndTask(t *testing.T) {
 	}
 }
 
+func TestSnapshotAcceptanceKeepsBasesImmutableAndDeltaEquivalentToFull(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedGraphSnapshot(t, s, "project", "base", "base")
+	if _, err := s.DB().Exec(`UPDATE graph_snapshots SET status='ready',query_ready=1 WHERE namespace='project' AND version='base'`); err != nil {
+		t.Fatal(err)
+	}
+	base, found, err := s.ReadGraphSnapshotBase(context.Background(), "project", "base")
+	if err != nil || !found || base.Status != graphsnapshot.SnapshotReady {
+		t.Fatalf("base=%#v found=%v err=%v", base, found, err)
+	}
+	extra := graphsnapshot.Node{ID: "node-extra", Type: "kind", Label: "extra", Text: "extra", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	finalNodes := append(append([]graphsnapshot.Node(nil), base.Manifest.Nodes...), extra)
+	_, hash, err := graphsnapshot.CanonicalHash(finalNodes, base.Manifest.Edges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sequence int64
+	service := graphsnapshot.NewService(s, func() (string, error) { return fmt.Sprintf("task-equivalence-%d", atomic.AddInt64(&sequence, 1)), nil })
+	if _, graphErr := service.Put(context.Background(), "project", "delta", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeDelta, BaseVersion: "base", ContentHash: hash, NodeUpserts: []graphsnapshot.Node{extra}}); graphErr != nil {
+		t.Fatalf("delta acceptance error=%#v", graphErr)
+	}
+	if _, graphErr := service.Put(context.Background(), "project", "full", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeFull, ContentHash: hash, Nodes: finalNodes, Edges: base.Manifest.Edges}); graphErr != nil {
+		t.Fatalf("full acceptance error=%#v", graphErr)
+	}
+	delta, deltaFound, err := s.LookupGraphSnapshot(context.Background(), "project", "delta")
+	if err != nil || !deltaFound || delta.ContentHash != hash || delta.NodeCount != len(finalNodes) {
+		t.Fatalf("delta=%#v found=%v err=%v", delta, deltaFound, err)
+	}
+	full, fullFound, err := s.LookupGraphSnapshot(context.Background(), "project", "full")
+	if err != nil || !fullFound || full.ContentHash != delta.ContentHash || full.NodeCount != delta.NodeCount || full.EdgeCount != delta.EdgeCount {
+		t.Fatalf("full=%#v found=%v err=%v", full, fullFound, err)
+	}
+	baseAfter, err := s.ReadGraphSnapshot(context.Background(), "project", "base")
+	if err != nil || len(baseAfter.Nodes) != len(base.Manifest.Nodes) {
+		t.Fatalf("base mutated=%#v err=%v", baseAfter, err)
+	}
+	if _, graphErr := service.Put(context.Background(), "missing-project", "target", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeDelta, BaseVersion: "missing", ContentHash: hash}); graphErr == nil || graphErr.Code != graphsnapshot.CodeBaseSnapshotNotFound {
+		t.Fatalf("missing base error=%#v", graphErr)
+	}
+	var namespaces int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_namespaces WHERE namespace='missing-project'`).Scan(&namespaces); err != nil || namespaces != 0 {
+		t.Fatalf("missing-base namespace count=%d err=%v", namespaces, err)
+	}
+}
+
 func seedGraphSnapshot(t *testing.T, s *Store, namespace, version, marker string) {
 	t.Helper()
 	const timestamp = "2026-08-10T00:00:00Z"

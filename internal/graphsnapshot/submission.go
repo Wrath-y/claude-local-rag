@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync"
 )
 
 var ErrSnapshotAlreadyAccepted = errors.New("graph snapshot already accepted")
@@ -44,15 +45,19 @@ type AcceptedSnapshot struct {
 // Service coordinates request validation and durable acceptance. Worker
 // startup is added separately; this service never performs graph materialization.
 type Service struct {
-	repository SnapshotAccepter
-	nextTaskID func() (string, error)
+	repository   SnapshotAccepter
+	nextTaskID   func() (string, error)
+	wake         chan struct{}
+	workerMu     sync.Mutex
+	workerWG     sync.WaitGroup
+	workerCancel context.CancelFunc
 }
 
 func NewService(repository SnapshotAccepter, nextTaskID func() (string, error)) *Service {
 	if nextTaskID == nil {
 		nextTaskID = randomTaskID
 	}
-	return &Service{repository: repository, nextTaskID: nextTaskID}
+	return &Service{repository: repository, nextTaskID: nextTaskID, wake: make(chan struct{}, 1)}
 }
 
 // SubmissionCheck describes whether the caller must create a first-time

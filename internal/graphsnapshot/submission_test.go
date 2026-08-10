@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type existingSnapshotReaderFake struct {
@@ -31,6 +32,20 @@ func (f *snapshotAccepterFake) AcceptGraphSnapshot(_ context.Context, accepted A
 type raceSnapshotAccepterFake struct {
 	lookups int
 	hash    string
+}
+
+type workerRepositoryFake struct {
+	snapshotAccepterFake
+	tasks chan Task
+}
+
+func (f *workerRepositoryFake) ClaimOldestQueuedGraphTask(context.Context) (Task, bool, error) {
+	select {
+	case task := <-f.tasks:
+		return task, true, nil
+	default:
+		return Task{}, false, nil
+	}
 }
 
 func (f *raceSnapshotAccepterFake) LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error) {
@@ -131,5 +146,49 @@ func TestServicePutReloadsOriginalSnapshotAfterSameVersionRace(t *testing.T) {
 	result, graphErr := service.Put(context.Background(), "project", "version", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: hash, Nodes: manifest.Nodes})
 	if graphErr != nil || !result.Existing || result.Snapshot.TaskID != "original-task" {
 		t.Fatalf("same-hash race result=%#v error=%#v", result, graphErr)
+	}
+}
+
+func TestServiceWorkerWakeAndClose(t *testing.T) {
+	repository := &workerRepositoryFake{tasks: make(chan Task, 1)}
+	service := NewService(repository, nil)
+	dispatched := make(chan Task, 1)
+	if err := service.Start(context.Background(), func(_ context.Context, task Task) error { dispatched <- task; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background(), func(context.Context, Task) error { t.Fatal("second worker dispatch"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	repository.tasks <- Task{ID: "task", State: TaskRunning}
+	service.Wake()
+	select {
+	case task := <-dispatched:
+		if task.ID != "task" {
+			t.Fatalf("task=%#v", task)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker was not woken")
+	}
+	service.Close()
+
+	blocked := make(chan struct{})
+	repository = &workerRepositoryFake{tasks: make(chan Task, 1)}
+	service = NewService(repository, nil)
+	if err := service.Start(context.Background(), func(ctx context.Context, _ Task) error { close(blocked); <-ctx.Done(); return ctx.Err() }); err != nil {
+		t.Fatal(err)
+	}
+	repository.tasks <- Task{ID: "blocking", State: TaskRunning}
+	service.Wake()
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatal("blocking dispatch did not start")
+	}
+	done := make(chan struct{})
+	go func() { service.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel dispatcher")
 	}
 }

@@ -57,8 +57,11 @@ func TestLookupGraphSnapshotReturnsScopedReplayResource(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO graph_snapshot_components(namespace,version,component,state,generation,warning) VALUES(?,?,?,?,?,?)`, "namespace", "version", "vector", "unavailable", nil, "vector is not configured"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.DB().Exec(`UPDATE graph_snapshot_components SET error_json=? WHERE namespace=? AND version=? AND component='fts'`, `{"code":"INTERNAL_ERROR","message":"Graph lifecycle operation failed","retryable":false,"details":{}}`, "namespace", "version"); err != nil {
+		t.Fatal(err)
+	}
 	snapshot, found, err := s.LookupGraphSnapshot(context.Background(), "namespace", "version")
-	if err != nil || !found || snapshot.TaskID != "task-namespace-version" || len(snapshot.Components) != 3 || snapshot.Components[0].Name != "graph" || snapshot.Components[0].Generation != "" || len(snapshot.Warnings) != 1 {
+	if err != nil || !found || snapshot.NodeCount != 2 || snapshot.EdgeCount != 1 || snapshot.ContentHash == "" || snapshot.TaskID != "task-namespace-version" || len(snapshot.Components) != 3 || snapshot.Components[0].Name != "graph" || snapshot.Components[0].Generation != "" || snapshot.Components[1].Error == nil || len(snapshot.Warnings) != 1 {
 		t.Fatalf("snapshot=%#v found=%v err=%v", snapshot, found, err)
 	}
 	if _, found, err := s.LookupGraphSnapshot(context.Background(), "namespace", "missing"); err != nil || found {

@@ -3,8 +3,13 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
 
 func TestReadGraphSnapshotScopesEveryReadByNamespaceAndVersion(t *testing.T) {
@@ -66,6 +71,60 @@ func TestLookupGraphSnapshotReturnsScopedReplayResource(t *testing.T) {
 	}
 	if _, found, err := s.LookupGraphSnapshot(context.Background(), "namespace", "missing"); err != nil || found {
 		t.Fatalf("missing found=%v err=%v", found, err)
+	}
+}
+
+func TestConcurrentSameVersionSubmissionKeepsOneSnapshotAndTask(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	node := graphsnapshot.Node{ID: "node", Type: "kind", Label: "label", Text: "text", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	_, hash, err := graphsnapshot.CanonicalHash([]graphsnapshot.Node{node}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var taskSequence int64
+	service := graphsnapshot.NewService(s, func() (string, error) { return fmt.Sprintf("task-%d", atomic.AddInt64(&taskSequence, 1)), nil })
+	request := graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeFull, ContentHash: hash, Nodes: []graphsnapshot.Node{node}}
+	start := make(chan struct{})
+	results := make(chan graphsnapshot.SubmissionCheck, 2)
+	errors := make(chan error, 2)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			result, graphErr := service.Put(context.Background(), "project", "revision", request)
+			if graphErr != nil {
+				errors <- graphErr
+				return
+			}
+			results <- result
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	close(errors)
+	for graphErr := range errors {
+		t.Fatalf("concurrent submission error: %v", graphErr)
+	}
+	var taskIDs []string
+	for result := range results {
+		taskIDs = append(taskIDs, result.Snapshot.TaskID)
+	}
+	if len(taskIDs) != 2 || taskIDs[0] != taskIDs[1] {
+		t.Fatalf("task IDs=%v, want one original task", taskIDs)
+	}
+	var snapshots, tasks int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_snapshots WHERE namespace='project' AND version='revision'`).Scan(&snapshots); err != nil || snapshots != 1 {
+		t.Fatalf("snapshots=%d err=%v", snapshots, err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_tasks WHERE namespace='project' AND version='revision'`).Scan(&tasks); err != nil || tasks != 1 {
+		t.Fatalf("tasks=%d err=%v", tasks, err)
 	}
 }
 

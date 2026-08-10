@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
@@ -146,6 +147,9 @@ func (s *Store) AcceptGraphSnapshot(ctx context.Context, accepted graphsnapshot.
 		baseVersion = accepted.BaseVersion
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_snapshots(namespace,version,base_version,schema_version,content_hash,node_count,edge_count,task_id,status,query_ready,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'building',0,?,?)`, accepted.Namespace, accepted.Version, baseVersion, graphsnapshot.SchemaVersionV1, accepted.ContentHash, len(accepted.Manifest.Nodes), len(accepted.Manifest.Edges), accepted.TaskID, now, now); err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed: graph_snapshots.namespace, graph_snapshots.version") {
+			return graphsnapshot.Snapshot{}, fmt.Errorf("%w: %v", graphsnapshot.ErrSnapshotAlreadyAccepted, err)
+		}
 		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph snapshot: %w", err)
 	}
 	for _, component := range []graphsnapshot.ComponentName{graphsnapshot.ComponentGraph, graphsnapshot.ComponentFTS, graphsnapshot.ComponentVector} {

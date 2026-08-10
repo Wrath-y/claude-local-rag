@@ -28,6 +28,25 @@ func (f *snapshotAccepterFake) AcceptGraphSnapshot(_ context.Context, accepted A
 	return Snapshot{Namespace: accepted.Namespace, Version: accepted.Version, ContentHash: accepted.ContentHash, TaskID: accepted.TaskID, Status: SnapshotBuilding}, nil
 }
 
+type raceSnapshotAccepterFake struct {
+	lookups int
+	hash    string
+}
+
+func (f *raceSnapshotAccepterFake) LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error) {
+	f.lookups++
+	if f.lookups == 1 {
+		return Snapshot{}, false, nil
+	}
+	return Snapshot{ContentHash: f.hash, TaskID: "original-task", Status: SnapshotBuilding}, true, nil
+}
+func (f *raceSnapshotAccepterFake) ReadGraphSnapshotBase(context.Context, string, string) (SnapshotBase, bool, error) {
+	return SnapshotBase{}, false, nil
+}
+func (f *raceSnapshotAccepterFake) AcceptGraphSnapshot(context.Context, AcceptedSnapshot) (Snapshot, error) {
+	return Snapshot{}, ErrSnapshotAlreadyAccepted
+}
+
 func (f existingSnapshotReaderFake) LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error) {
 	return f.snapshot, f.found, f.err
 }
@@ -86,5 +105,31 @@ func TestServicePutAcceptsOnlyVerifiedCanonicalFullAndDeltaManifests(t *testing.
 	service = NewService(repository, func() (string, error) { return "must-not-be-used", nil })
 	if _, graphErr = service.Put(context.Background(), "project", "bad", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: testHash, Nodes: full.Nodes}); graphErr == nil || graphErr.Code != CodeContentHashMismatch || repository.accepted != nil {
 		t.Fatalf("mismatch accepted=%#v error=%#v", repository.accepted, graphErr)
+	}
+}
+
+func TestServicePutReloadsOriginalSnapshotAfterSameVersionRace(t *testing.T) {
+	manifest := Manifest{SchemaVersion: SchemaVersionV1, Nodes: []Node{testNode("a")}}
+	_, hash, err := CanonicalHash(manifest.Nodes, manifest.Edges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash == testHash {
+		t.Fatal("test fixture unexpectedly used the fixed hash")
+	}
+	repository := &raceSnapshotAccepterFake{hash: testHash}
+	service := NewService(repository, func() (string, error) { return "losing-task", nil })
+	_, graphErr := service.Put(context.Background(), "project", "version", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: hash, Nodes: manifest.Nodes})
+	if graphErr == nil || graphErr.Code != CodeContentHashConflict {
+		t.Fatalf("different winner hash error=%#v", graphErr)
+	}
+
+	// The same-hash path is the only race replay that may return the original
+	// task. Use a winner carrying the exact normalized hash.
+	repository = &raceSnapshotAccepterFake{hash: hash}
+	service = NewService(repository, func() (string, error) { return "losing-task", nil })
+	result, graphErr := service.Put(context.Background(), "project", "version", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: hash, Nodes: manifest.Nodes})
+	if graphErr != nil || !result.Existing || result.Snapshot.TaskID != "original-task" {
+		t.Fatalf("same-hash race result=%#v error=%#v", result, graphErr)
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 )
+
+var ErrSnapshotAlreadyAccepted = errors.New("graph snapshot already accepted")
 
 // ExistingSnapshotReader is intentionally small: replay must happen before a
 // full/delta request is materialized or any new graph state is created.
@@ -102,6 +105,9 @@ func (s *Service) Put(ctx context.Context, namespace, version string, request Re
 	}
 	snapshot, err := s.repository.AcceptGraphSnapshot(ctx, AcceptedSnapshot{Namespace: namespace, Version: version, BaseVersion: baseVersion, ContentHash: actualHash, Manifest: manifest, TaskID: taskID})
 	if err != nil {
+		if errors.Is(err, ErrSnapshotAlreadyAccepted) {
+			return CheckExistingSubmission(ctx, s.repository, namespace, version, request.ContentHash)
+		}
 		return SubmissionCheck{}, NewError(CodeGraphStoreUnavailable, nil, err)
 	}
 	return SubmissionCheck{Snapshot: snapshot}, nil

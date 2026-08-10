@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
@@ -104,6 +105,71 @@ func (s *Store) LookupGraphSnapshot(ctx context.Context, namespace, version stri
 		return graphsnapshot.Snapshot{}, false, fmt.Errorf("iterate graph components: %w", err)
 	}
 	return snapshot, true, nil
+}
+
+func (s *Store) ReadGraphSnapshotBase(ctx context.Context, namespace, version string) (graphsnapshot.SnapshotBase, bool, error) {
+	record, err := s.ReadGraphSnapshot(ctx, namespace, version)
+	if errors.Is(err, ErrGraphSnapshotNotFound) {
+		return graphsnapshot.SnapshotBase{}, false, nil
+	}
+	if err != nil {
+		return graphsnapshot.SnapshotBase{}, false, err
+	}
+	return graphsnapshot.SnapshotBase{Status: record.Status, Manifest: graphsnapshot.Manifest{SchemaVersion: record.SchemaVersion, Nodes: record.Nodes, Edges: record.Edges}}, true, nil
+}
+
+// AcceptGraphSnapshot persists only an already normalized, hash-verified
+// manifest. The graph/FTS/vector rows remain private staging work until the
+// durable worker promotes them in a later lifecycle step.
+func (s *Store) AcceptGraphSnapshot(ctx context.Context, accepted graphsnapshot.AcceptedSnapshot) (graphsnapshot.Snapshot, error) {
+	if err := s.GraphUnavailable(); err != nil {
+		return graphsnapshot.Snapshot{}, err
+	}
+	canonical, hash, err := graphsnapshot.CanonicalHash(accepted.Manifest.Nodes, accepted.Manifest.Edges)
+	if err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("canonical graph snapshot: %w", err)
+	}
+	if hash != accepted.ContentHash {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("graph snapshot hash changed before acceptance")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return graphsnapshot.Snapshot{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_namespaces(namespace,created_at) VALUES(?,?) ON CONFLICT(namespace) DO NOTHING`, accepted.Namespace, now); err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph namespace: %w", err)
+	}
+	var baseVersion any
+	if accepted.BaseVersion != "" {
+		baseVersion = accepted.BaseVersion
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_snapshots(namespace,version,base_version,schema_version,content_hash,node_count,edge_count,task_id,status,query_ready,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'building',0,?,?)`, accepted.Namespace, accepted.Version, baseVersion, graphsnapshot.SchemaVersionV1, accepted.ContentHash, len(accepted.Manifest.Nodes), len(accepted.Manifest.Edges), accepted.TaskID, now, now); err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph snapshot: %w", err)
+	}
+	for _, component := range []graphsnapshot.ComponentName{graphsnapshot.ComponentGraph, graphsnapshot.ComponentFTS, graphsnapshot.ComponentVector} {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO graph_snapshot_components(namespace,version,component,state) VALUES(?,?,?,'pending')`, accepted.Namespace, accepted.Version, component); err != nil {
+			return graphsnapshot.Snapshot{}, fmt.Errorf("create graph component: %w", err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_snapshot_staging(namespace,version,manifest_json) VALUES(?,?,?)`, accepted.Namespace, accepted.Version, string(canonical)); err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph staging: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,created_at) VALUES(?,?,?,'queued','queued',0,?)`, accepted.TaskID, accepted.Namespace, accepted.Version, now); err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph task: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return graphsnapshot.Snapshot{}, fmt.Errorf("commit graph acceptance: %w", err)
+	}
+	return graphsnapshot.Snapshot{Namespace: accepted.Namespace, Version: accepted.Version, BaseVersion: stringPointer(accepted.BaseVersion), SchemaVersion: graphsnapshot.SchemaVersionV1, ContentHash: accepted.ContentHash, NodeCount: len(accepted.Manifest.Nodes), EdgeCount: len(accepted.Manifest.Edges), TaskID: accepted.TaskID, Status: graphsnapshot.SnapshotBuilding, Components: []graphsnapshot.Component{{Name: graphsnapshot.ComponentGraph, State: graphsnapshot.ComponentPending}, {Name: graphsnapshot.ComponentFTS, State: graphsnapshot.ComponentPending}, {Name: graphsnapshot.ComponentVector, State: graphsnapshot.ComponentPending}}}, nil
+}
+
+func stringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // ReadGraphSnapshot obtains a stable read transaction and loads the snapshot,

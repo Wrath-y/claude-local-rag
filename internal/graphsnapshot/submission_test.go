@@ -12,6 +12,22 @@ type existingSnapshotReaderFake struct {
 	err      error
 }
 
+type snapshotAccepterFake struct {
+	existingSnapshotReaderFake
+	base      SnapshotBase
+	baseFound bool
+	accepted  *AcceptedSnapshot
+}
+
+func (f *snapshotAccepterFake) ReadGraphSnapshotBase(context.Context, string, string) (SnapshotBase, bool, error) {
+	return f.base, f.baseFound, nil
+}
+
+func (f *snapshotAccepterFake) AcceptGraphSnapshot(_ context.Context, accepted AcceptedSnapshot) (Snapshot, error) {
+	f.accepted = &accepted
+	return Snapshot{Namespace: accepted.Namespace, Version: accepted.Version, ContentHash: accepted.ContentHash, TaskID: accepted.TaskID, Status: SnapshotBuilding}, nil
+}
+
 func (f existingSnapshotReaderFake) LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error) {
 	return f.snapshot, f.found, f.err
 }
@@ -37,5 +53,38 @@ func TestCheckExistingSubmissionRejectsConflictsAndDoesNotTreatMissingAsReplay(t
 	}
 	if _, graphErr := CheckExistingSubmission(context.Background(), existingSnapshotReaderFake{err: errors.New("offline")}, "project", "revision", testHash); graphErr == nil || graphErr.Code != CodeGraphStoreUnavailable {
 		t.Fatalf("store error=%#v", graphErr)
+	}
+}
+
+func TestServicePutAcceptsOnlyVerifiedCanonicalFullAndDeltaManifests(t *testing.T) {
+	full := Manifest{SchemaVersion: SchemaVersionV1, Nodes: []Node{testNode("a")}}
+	_, fullHash, err := CanonicalHash(full.Nodes, full.Edges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &snapshotAccepterFake{}
+	service := NewService(repository, func() (string, error) { return "task-full", nil })
+	result, graphErr := service.Put(context.Background(), "project", "full", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: fullHash, Nodes: full.Nodes})
+	if graphErr != nil || result.Existing || repository.accepted == nil || repository.accepted.TaskID != "task-full" || len(repository.accepted.Manifest.Nodes) != 1 {
+		t.Fatalf("result=%#v accepted=%#v error=%#v", result, repository.accepted, graphErr)
+	}
+
+	base := Manifest{SchemaVersion: SchemaVersionV1, Nodes: []Node{testNode("a")}}
+	deltaResult := Manifest{SchemaVersion: SchemaVersionV1, Nodes: []Node{testNode("a"), testNode("b")}}
+	_, deltaHash, err := CanonicalHash(deltaResult.Nodes, deltaResult.Edges)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository = &snapshotAccepterFake{base: SnapshotBase{Status: SnapshotReady, Manifest: base}, baseFound: true}
+	service = NewService(repository, func() (string, error) { return "task-delta", nil })
+	_, graphErr = service.Put(context.Background(), "project", "delta", Request{SchemaVersion: SchemaVersionV1, Mode: ModeDelta, BaseVersion: "base", ContentHash: deltaHash, NodeUpserts: []Node{testNode("b")}})
+	if graphErr != nil || repository.accepted == nil || repository.accepted.BaseVersion != "base" || len(repository.accepted.Manifest.Nodes) != 2 {
+		t.Fatalf("delta accepted=%#v error=%#v", repository.accepted, graphErr)
+	}
+
+	repository = &snapshotAccepterFake{}
+	service = NewService(repository, func() (string, error) { return "must-not-be-used", nil })
+	if _, graphErr = service.Put(context.Background(), "project", "bad", Request{SchemaVersion: SchemaVersionV1, Mode: ModeFull, ContentHash: testHash, Nodes: full.Nodes}); graphErr == nil || graphErr.Code != CodeContentHashMismatch || repository.accepted != nil {
+		t.Fatalf("mismatch accepted=%#v error=%#v", repository.accepted, graphErr)
 	}
 }

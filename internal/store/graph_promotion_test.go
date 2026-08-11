@@ -126,3 +126,41 @@ func TestPromoteGraphComponentRollsBackAllRowsOnWriteFailure(t *testing.T) {
 		t.Fatalf("graph component state=%q err=%v", state, err)
 	}
 }
+
+func TestPopulateGraphSearchDocumentsRollsBackOnFTSInputFailure(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	node := graphsnapshot.Node{ID: "node", Type: "kind", Label: "label", Text: "search text", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	edge := graphsnapshot.Edge{ID: "edge", From: "node", To: "node", Type: "kind", RelationKind: "explicit", Confidence: "1", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	_, hash, err := graphsnapshot.CanonicalHash([]graphsnapshot.Node{node}, []graphsnapshot.Edge{edge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := graphsnapshot.NewService(s, func() (string, error) { return "fts-rollback-task", nil })
+	if _, graphErr := service.Put(context.Background(), "project", "fts-rollback", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeFull, ContentHash: hash, Nodes: []graphsnapshot.Node{node}, Edges: []graphsnapshot.Edge{edge}}); graphErr != nil {
+		t.Fatal(graphErr)
+	}
+	if err = s.PromoteGraphComponent(context.Background(), "fts-rollback-task"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB().Exec(`CREATE TRIGGER fail_graph_fts_population BEFORE INSERT ON graph_search_documents WHEN NEW.entity_kind='edge' BEGIN SELECT RAISE(ABORT,'injected fts population failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PopulateGraphSearchDocuments(context.Background(), "fts-rollback-task"); err == nil {
+		t.Fatal("FTS population unexpectedly succeeded")
+	}
+	var documents, fts int
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_search_documents WHERE namespace='project' AND version='fts-rollback'`).Scan(&documents); err != nil || documents != 0 {
+		t.Fatalf("partial documents=%d err=%v", documents, err)
+	}
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_search_fts WHERE graph_search_fts MATCH 'search'`).Scan(&fts); err != nil || fts != 0 {
+		t.Fatalf("partial FTS rows=%d err=%v", fts, err)
+	}
+	var state string
+	if err = s.DB().QueryRow(`SELECT state FROM graph_snapshot_components WHERE namespace='project' AND version='fts-rollback' AND component='fts'`).Scan(&state); err != nil || state != "pending" {
+		t.Fatalf("FTS component state=%q err=%v", state, err)
+	}
+}

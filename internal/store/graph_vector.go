@@ -9,6 +9,8 @@ import (
 
 type graphSearchInput struct{ kind, id, text string }
 
+const graphEmbeddingBatchSize = 128
+
 // BuildGraphVectors writes one private generation only after embedding has
 // completed outside SQLite. A provider failure therefore leaves no selected
 // generation and no partial vector rows.
@@ -38,17 +40,25 @@ func (s *Store) BuildGraphVectors(ctx context.Context, taskID string, embedder g
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	vectors, err := embedder.Embed(ctx, texts)
-	if err != nil {
-		return err
-	}
-	if len(vectors) != len(inputs) {
-		return fmt.Errorf("graph vector coverage mismatch")
-	}
-	for _, v := range vectors {
-		if len(v) != s.dims {
-			return fmt.Errorf("graph vector dimension mismatch")
+	vectors := make([][]float32, 0, len(inputs))
+	for start := 0; start < len(texts); start += graphEmbeddingBatchSize {
+		end := start + graphEmbeddingBatchSize
+		if end > len(texts) {
+			end = len(texts)
 		}
+		batch, embedErr := embedder.Embed(ctx, texts[start:end])
+		if embedErr != nil {
+			return embedErr
+		}
+		if len(batch) != end-start {
+			return fmt.Errorf("graph vector coverage mismatch")
+		}
+		for _, vector := range batch {
+			if len(vector) != s.dims {
+				return fmt.Errorf("graph vector dimension mismatch")
+			}
+		}
+		vectors = append(vectors, batch...)
 	}
 	generation := "vector-" + taskID
 	tx, err := s.db.BeginTx(ctx, nil)

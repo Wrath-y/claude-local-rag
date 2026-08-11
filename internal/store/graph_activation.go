@@ -2,23 +2,30 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 )
 
 // ActivateGraphSnapshot switches one namespace head only after confirming the
 // requested immutable snapshot is query-ready. No graph/index rows move.
 func (s *Store) ActivateGraphSnapshot(ctx context.Context, namespace, version string) (bool, error) {
+	if err := s.GraphUnavailable(); err != nil {
+		return false, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
 	var ready int
-	if err = tx.QueryRowContext(ctx, `SELECT query_ready FROM graph_snapshots WHERE namespace=? AND version=?`, namespace, version).Scan(&ready); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT query_ready FROM graph_snapshots WHERE namespace=? AND version=?`, namespace, version).Scan(&ready); errors.Is(err, sql.ErrNoRows) {
+		return false, ErrGraphSnapshotNotFound
+	} else if err != nil {
 		return false, err
 	}
 	if ready != 1 {
-		return false, fmt.Errorf("graph snapshot is not ready")
+		return false, fmt.Errorf("%w: %s/%s", ErrGraphSnapshotNotReady, namespace, version)
 	}
 	var current string
 	err = tx.QueryRowContext(ctx, `SELECT active_version FROM graph_namespace_heads WHERE namespace=?`, namespace).Scan(&current)

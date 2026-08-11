@@ -32,6 +32,7 @@ type Deps struct {
 	GraphService        GraphSnapshotService
 	GraphSnapshotReader graphsnapshot.ExistingSnapshotReader
 	GraphTaskReader     GraphTaskReader
+	GraphLifecycle      GraphSnapshotLifecycle
 	// LoaderRegistry and FeishuResolver make input resolution explicit and
 	// replaceable in tests. A nil resolver safely rejects Feishu URLs.
 	LoaderRegistry *document.Registry
@@ -51,6 +52,7 @@ type Handler struct {
 	graphService     GraphSnapshotService
 	graphReader      graphsnapshot.ExistingSnapshotReader
 	graphTaskReader  GraphTaskReader
+	graphLifecycle   GraphSnapshotLifecycle
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -91,6 +93,7 @@ func New(deps Deps) *Handler {
 		graphService:         deps.GraphService,
 		graphReader:          deps.GraphSnapshotReader,
 		graphTaskReader:      deps.GraphTaskReader,
+		graphLifecycle:       deps.GraphLifecycle,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
 	}

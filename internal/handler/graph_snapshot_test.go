@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
+	"github.com/Wrath-y/local-rag/internal/store"
 )
 
 type graphServiceFake struct {
@@ -41,6 +42,20 @@ type graphTaskReaderFake struct {
 	id    string
 }
 
+type graphLifecycleFake struct {
+	changed     bool
+	activateErr error
+	deleteErr   error
+}
+
+func (f graphLifecycleFake) ActivateGraphSnapshot(context.Context, string, string) (bool, error) {
+	return f.changed, f.activateErr
+}
+
+func (f graphLifecycleFake) DeleteGraphSnapshot(context.Context, string, string) error {
+	return f.deleteErr
+}
+
 func (f *graphTaskReaderFake) LookupGraphTask(_ context.Context, id string) (graphsnapshot.Task, bool, error) {
 	f.id = id
 	return f.task, f.found, f.err
@@ -57,7 +72,38 @@ func newGraphSnapshotRouter(h *Handler) *gin.Engine {
 	router.PUT("/v1/graphs/:namespace/snapshots/:version", h.PutGraphSnapshot)
 	router.GET("/v1/graphs/:namespace/snapshots/:version", h.GetGraphSnapshot)
 	router.GET("/v1/tasks/:task_id", h.GetGraphTask)
+	router.POST("/v1/graphs/:namespace/snapshots/:version/activate", h.ActivateGraphSnapshot)
+	router.DELETE("/v1/graphs/:namespace/snapshots/:version", h.DeleteGraphSnapshot)
 	return router
+}
+
+func TestGraphSnapshotActivationAndDeletionHandlers(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		method     string
+		path       string
+		lifecycle  graphLifecycleFake
+		wantStatus int
+		wantCode   string
+	}{
+		{"activate changed", http.MethodPost, "/v1/graphs/project/snapshots/ready/activate", graphLifecycleFake{changed: true}, http.StatusOK, `"changed":true`},
+		{"activate replay", http.MethodPost, "/v1/graphs/project/snapshots/ready/activate", graphLifecycleFake{}, http.StatusOK, `"changed":false`},
+		{"activate missing", http.MethodPost, "/v1/graphs/project/snapshots/missing/activate", graphLifecycleFake{activateErr: store.ErrGraphSnapshotNotFound}, http.StatusNotFound, `"code":"SNAPSHOT_NOT_FOUND"`},
+		{"activate building", http.MethodPost, "/v1/graphs/project/snapshots/building/activate", graphLifecycleFake{activateErr: store.ErrGraphSnapshotNotReady}, http.StatusConflict, `"code":"SNAPSHOT_NOT_READY"`},
+		{"delete", http.MethodDelete, "/v1/graphs/project/snapshots/old", graphLifecycleFake{}, http.StatusNoContent, ""},
+		{"delete missing", http.MethodDelete, "/v1/graphs/project/snapshots/missing", graphLifecycleFake{deleteErr: store.ErrGraphSnapshotNotFound}, http.StatusNotFound, `"code":"SNAPSHOT_NOT_FOUND"`},
+		{"delete active", http.MethodDelete, "/v1/graphs/project/snapshots/active", graphLifecycleFake{deleteErr: store.ErrGraphSnapshotActive}, http.StatusConflict, `"code":"ACTIVE_SNAPSHOT_DELETE_FORBIDDEN"`},
+		{"delete writing", http.MethodDelete, "/v1/graphs/project/snapshots/writing", graphLifecycleFake{deleteErr: store.ErrGraphSnapshotWriting}, http.StatusConflict, `"code":"SNAPSHOT_WRITE_IN_PROGRESS"`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler := New(Deps{Config: &config.Config{}, GraphLifecycle: testCase.lifecycle})
+			response := httptest.NewRecorder()
+			newGraphSnapshotRouter(handler).ServeHTTP(response, httptest.NewRequest(testCase.method, testCase.path, nil))
+			if response.Code != testCase.wantStatus || (testCase.wantCode != "" && !strings.Contains(response.Body.String(), testCase.wantCode)) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
 }
 
 func TestGetGraphTaskReturnsEveryDurableStateAndNotFound(t *testing.T) {

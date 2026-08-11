@@ -17,6 +17,9 @@ var (
 	// lifecycle service maps it to its stable SNAPSHOT_NOT_FOUND response.
 	ErrGraphSnapshotNotFound = errors.New("graph snapshot not found")
 	ErrGraphTaskNotFound     = errors.New("graph task not found")
+	ErrGraphSnapshotNotReady = errors.New("graph snapshot not ready")
+	ErrGraphSnapshotActive   = errors.New("active graph snapshot cannot be deleted")
+	ErrGraphSnapshotWriting  = errors.New("graph snapshot write is in progress")
 	ErrInvalidGraphIdentity  = errors.New("graph namespace and version are required")
 )
 

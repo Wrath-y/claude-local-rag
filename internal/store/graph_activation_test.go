@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 )
@@ -13,8 +14,8 @@ func TestActivateGraphSnapshotRequiresReadyAndIsIdempotent(t *testing.T) {
 	}
 	defer s.Close()
 	seedGraphSnapshot(t, s, "project", "building", "building")
-	if _, err := s.ActivateGraphSnapshot(context.Background(), "project", "building"); err == nil {
-		t.Fatal("activated building snapshot")
+	if _, err := s.ActivateGraphSnapshot(context.Background(), "project", "building"); !errors.Is(err, ErrGraphSnapshotNotReady) {
+		t.Fatalf("activate building err=%v, want ErrGraphSnapshotNotReady", err)
 	}
 	seedGraphSnapshot(t, s, "project", "ready", "ready")
 	if _, err := s.DB().Exec(`UPDATE graph_snapshots SET status='ready',query_ready=1 WHERE namespace='project' AND version='ready'`); err != nil {
@@ -31,6 +32,17 @@ func TestActivateGraphSnapshotRequiresReadyAndIsIdempotent(t *testing.T) {
 	var active string
 	if err = s.DB().QueryRow(`SELECT active_version FROM graph_namespace_heads WHERE namespace='project'`).Scan(&active); err != nil || active != "ready" {
 		t.Fatalf("active=%q err=%v", active, err)
+	}
+}
+
+func TestActivateGraphSnapshotReportsMissingSnapshot(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.ActivateGraphSnapshot(context.Background(), "project", "missing"); !errors.Is(err, ErrGraphSnapshotNotFound) {
+		t.Fatalf("activate missing err=%v, want ErrGraphSnapshotNotFound", err)
 	}
 }
 

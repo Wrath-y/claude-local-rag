@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -15,8 +16,8 @@ func TestDeleteGraphSnapshotGuardsActiveAndWriterThenCascades(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO graph_tasks(id,namespace,version,state,phase,created_at) VALUES('task-project-target','project','target','queued','queued','2026-08-10T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteGraphSnapshot(context.Background(), "project", "target"); err == nil {
-		t.Fatal("deleted while writer queued")
+	if err := s.DeleteGraphSnapshot(context.Background(), "project", "target"); !errors.Is(err, ErrGraphSnapshotWriting) {
+		t.Fatalf("delete writer err=%v, want ErrGraphSnapshotWriting", err)
 	}
 	if _, err := s.DB().Exec(`UPDATE graph_tasks SET state='failed' WHERE id='task-project-target'`); err != nil {
 		t.Fatal(err)
@@ -24,8 +25,8 @@ func TestDeleteGraphSnapshotGuardsActiveAndWriterThenCascades(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO graph_namespace_heads(namespace,active_version) VALUES('project','target')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteGraphSnapshot(context.Background(), "project", "target"); err == nil {
-		t.Fatal("deleted active snapshot")
+	if err := s.DeleteGraphSnapshot(context.Background(), "project", "target"); !errors.Is(err, ErrGraphSnapshotActive) {
+		t.Fatalf("delete active err=%v, want ErrGraphSnapshotActive", err)
 	}
 	if _, err := s.DB().Exec(`DELETE FROM graph_namespace_heads WHERE namespace='project'`); err != nil {
 		t.Fatal(err)

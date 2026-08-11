@@ -2,12 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
+	"github.com/Wrath-y/local-rag/internal/store"
 )
 
 const (
@@ -26,6 +28,13 @@ type GraphSnapshotService interface {
 // GraphTaskReader is the read-side dependency for durable task inspection.
 type GraphTaskReader interface {
 	LookupGraphTask(context.Context, string) (graphsnapshot.Task, bool, error)
+}
+
+// GraphSnapshotLifecycle owns the narrow ready-only activation and guarded
+// deletion operations. Its implementation keeps the state checks atomic.
+type GraphSnapshotLifecycle interface {
+	ActivateGraphSnapshot(context.Context, string, string) (bool, error)
+	DeleteGraphSnapshot(context.Context, string, string) error
 }
 
 // PutGraphSnapshot accepts an immutable graph snapshot. The durable task is
@@ -110,6 +119,60 @@ func (h *Handler) GetGraphTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, task)
+}
+
+// ActivateGraphSnapshot switches only a ready snapshot into the namespace's
+// active pointer. Replays are successful and report changed=false.
+func (h *Handler) ActivateGraphSnapshot(c *gin.Context) {
+	namespace, version, ok := graphSnapshotIdentity(c)
+	if !ok {
+		return
+	}
+	if h.graphLifecycle == nil {
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeGraphStoreUnavailable, nil, nil))
+		return
+	}
+	changed, err := h.graphLifecycle.ActivateGraphSnapshot(c.Request.Context(), namespace, version)
+	if err != nil {
+		writeGraphLifecycleError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"namespace": namespace, "active_version": version, "changed": changed})
+}
+
+// DeleteGraphSnapshot deletes an inactive snapshot only after the storage
+// layer atomically confirms no durable writer is queued or running.
+func (h *Handler) DeleteGraphSnapshot(c *gin.Context) {
+	namespace, version, ok := graphSnapshotIdentity(c)
+	if !ok {
+		return
+	}
+	if h.graphLifecycle == nil {
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeGraphStoreUnavailable, nil, nil))
+		return
+	}
+	if err := h.graphLifecycle.DeleteGraphSnapshot(c.Request.Context(), namespace, version); err != nil {
+		writeGraphLifecycleError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func writeGraphLifecycleError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, store.ErrGraphSnapshotNotFound):
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeSnapshotNotFound, nil, nil))
+	case errors.Is(err, store.ErrGraphSnapshotNotReady):
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeSnapshotNotReady, nil, nil))
+	case errors.Is(err, store.ErrGraphSnapshotActive):
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeActiveSnapshotDeleteForbidden, nil, nil))
+	case errors.Is(err, store.ErrGraphSnapshotWriting):
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeSnapshotWriteInProgress, nil, nil))
+	case errors.Is(err, store.ErrGraphUnavailable):
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeGraphStoreUnavailable, nil, err))
+	default:
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeInternalError, nil, err))
+	}
 }
 
 func graphSnapshotIdentity(c *gin.Context) (string, string, bool) {

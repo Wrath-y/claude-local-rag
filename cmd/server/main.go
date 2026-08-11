@@ -147,6 +147,8 @@ func main() {
 	v1.GET("/graphs/:namespace/snapshots/:version", h.GetGraphSnapshot)
 	v1.POST("/graphs/:namespace/snapshots/:version/activate", h.ActivateGraphSnapshot)
 	v1.DELETE("/graphs/:namespace/snapshots/:version", h.DeleteGraphSnapshot)
+	v1.POST("/graphs/:namespace/traverse", h.TraverseGraph)
+	v1.POST("/graphs/:namespace/paths", h.PathsGraph)
 	v1.GET("/tasks/:task_id", h.GetGraphTask)
 
 	// Core routes.

@@ -1,0 +1,1 @@
+{"request":{"snapshot_version":"candidate-v1","source_node_ids":["service-a"],"target_node_ids":["queue-c"],"relationship_kinds":["explicit","inferred"],"max_depth":3,"max_paths":20},"expect":{"resolved_snapshot_version":"candidate-v1","content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","truncated":false,"truncation_reasons":[]}}

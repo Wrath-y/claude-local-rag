@@ -7,6 +7,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/citation"
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/document"
+	"github.com/Wrath-y/local-rag/internal/graphquery"
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/observe"
@@ -53,6 +54,7 @@ type Handler struct {
 	graphReader      graphsnapshot.ExistingSnapshotReader
 	graphTaskReader  GraphTaskReader
 	graphLifecycle   GraphSnapshotLifecycle
+	graphQuery       *graphquery.Service
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -96,6 +98,9 @@ func New(deps Deps) *Handler {
 		graphLifecycle:       deps.GraphLifecycle,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
+	}
+	if deps.Stores != nil {
+		h.graphQuery = &graphquery.Service{Repository: lifecycleGraphReadRepository{stores: deps.Stores}}
 	}
 	if deps.LoaderRegistry == nil {
 		deps.LoaderRegistry = document.BuiltinRegistryWithOptions(deps.FeishuResolver, connectorOptions(deps.Config))

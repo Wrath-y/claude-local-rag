@@ -9,7 +9,8 @@ func TestErrorCatalogCoversLifecycleCodes(t *testing.T) {
 		CodeBaseSnapshotNotFound, CodeBaseSnapshotNotReady, CodeContentHashMismatch,
 		CodeContentHashConflict, CodeSnapshotNotFound, CodeTaskNotFound,
 		CodeSnapshotNotReady, CodeActiveSnapshotDeleteForbidden,
-		CodeSnapshotWriteInProgress, CodeGraphStoreUnavailable, CodeInternalError,
+		CodeSnapshotWriteInProgress, CodeInvalidGraphQuery, CodeLimitExceeded,
+		CodeNoActiveSnapshot, CodeNodeNotFound, CodeGraphStoreUnavailable, CodeInternalError,
 	}
 	for _, code := range codes {
 		err := NewError(code, nil, nil)

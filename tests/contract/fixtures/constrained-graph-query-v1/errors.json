@@ -1,0 +1,1 @@
+{"no_active_snapshot":{"status":404,"code":"NO_ACTIVE_SNAPSHOT"},"missing_node":{"status":404,"code":"NODE_NOT_FOUND","details":{"missing_node_ids":["missing-a","missing-z"]}},"hard_limit":{"status":400,"code":"LIMIT_EXCEEDED"}}

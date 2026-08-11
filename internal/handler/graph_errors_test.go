@@ -75,6 +75,10 @@ func TestWriteGraphErrorMapsEveryStableCode(t *testing.T) {
 		graphsnapshot.CodeSnapshotNotReady:              http.StatusConflict,
 		graphsnapshot.CodeActiveSnapshotDeleteForbidden: http.StatusConflict,
 		graphsnapshot.CodeSnapshotWriteInProgress:       http.StatusConflict,
+		graphsnapshot.CodeInvalidGraphQuery:             http.StatusBadRequest,
+		graphsnapshot.CodeLimitExceeded:                 http.StatusBadRequest,
+		graphsnapshot.CodeNoActiveSnapshot:              http.StatusNotFound,
+		graphsnapshot.CodeNodeNotFound:                  http.StatusNotFound,
 		graphsnapshot.CodeGraphStoreUnavailable:         http.StatusServiceUnavailable,
 		graphsnapshot.CodeInternalError:                 http.StatusInternalServerError,
 	}

@@ -42,6 +42,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Activation' }
         default: { $ref: '#/components/responses/GraphError' }
+  /v1/graphs/{namespace}/traverse:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    post:
+      operationId: traverseGraph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TraverseRequest' }
+      responses:
+        '200': { description: Deterministic traversal result, content: { application/json: { schema: { $ref: '#/components/schemas/TraverseResult' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
+  /v1/graphs/{namespace}/paths:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    post:
+      operationId: graphPaths
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PathsRequest' }
+      responses:
+        '200': { description: Deterministic path result, content: { application/json: { schema: { $ref: '#/components/schemas/PathsResult' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
   /v1/tasks/{task_id}:
     parameters:
       - $ref: '#/components/parameters/TaskID'
@@ -163,8 +189,75 @@ components:
       properties:
         code:
           type: string
-          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, GRAPH_STORE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, INVALID_GRAPH_QUERY, LIMIT_EXCEEDED, NO_ACTIVE_SNAPSHOT, NODE_NOT_FOUND, GRAPH_STORE_UNAVAILABLE, INTERNAL_ERROR]
         message: { type: string, minLength: 1 }
         retryable: { type: boolean }
         details: { type: object, additionalProperties: true }
         request_id: { type: string, minLength: 1 }
+    GraphDirection: { type: string, enum: [outgoing, incoming, both], default: outgoing }
+    TruncationReason: { type: string, enum: [MAX_DEPTH, MAX_NODES, MAX_PATHS] }
+    TraverseRequest:
+      type: object
+      required: [start_node_ids]
+      additionalProperties: false
+      properties:
+        snapshot_version: { type: string }
+        start_node_ids: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        direction: { $ref: '#/components/schemas/GraphDirection' }
+        node_types: { type: array, items: { type: string, minLength: 1 } }
+        edge_types: { type: array, items: { type: string, minLength: 1 } }
+        relationship_kinds: { type: array, items: { type: string, enum: [explicit, inferred] }, default: [explicit] }
+        max_depth: { type: integer, minimum: 0, maximum: 6, default: 3 }
+        max_nodes: { type: integer, minimum: 1, maximum: 500, default: 500 }
+    PathsRequest:
+      type: object
+      required: [source_node_ids, target_node_ids]
+      additionalProperties: false
+      properties:
+        snapshot_version: { type: string }
+        source_node_ids: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        target_node_ids: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        direction: { $ref: '#/components/schemas/GraphDirection' }
+        node_types: { type: array, items: { type: string, minLength: 1 } }
+        edge_types: { type: array, items: { type: string, minLength: 1 } }
+        relationship_kinds: { type: array, items: { type: string, enum: [explicit, inferred] }, default: [explicit] }
+        max_depth: { type: integer, minimum: 0, maximum: 6, default: 3 }
+        max_paths: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    TraversedNode:
+      allOf:
+        - $ref: '#/components/schemas/Node'
+        - type: object
+          required: [depth]
+          properties: { depth: { type: integer, minimum: 0 } }
+    GraphPath:
+      type: object
+      required: [source_node_id, target_node_id, node_ids, edge_ids, hop_count, inferred_edge_count, confidence]
+      properties:
+        source_node_id: { type: string }
+        target_node_id: { type: string }
+        node_ids: { type: array, items: { type: string } }
+        edge_ids: { type: array, items: { type: string } }
+        hop_count: { type: integer, minimum: 0 }
+        inferred_edge_count: { type: integer, minimum: 0 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    TraverseResult:
+      type: object
+      required: [resolved_snapshot_version, content_hash, nodes, edges, truncated, truncation_reasons]
+      properties:
+        resolved_snapshot_version: { type: string }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        nodes: { type: array, items: { $ref: '#/components/schemas/TraversedNode' } }
+        edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+        truncated: { type: boolean }
+        truncation_reasons: { type: array, items: { $ref: '#/components/schemas/TruncationReason' } }
+    PathsResult:
+      type: object
+      required: [resolved_snapshot_version, content_hash, paths, nodes, edges, truncated, truncation_reasons]
+      properties:
+        resolved_snapshot_version: { type: string }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        paths: { type: array, items: { $ref: '#/components/schemas/GraphPath' } }
+        nodes: { type: array, items: { $ref: '#/components/schemas/Node' } }
+        edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+        truncated: { type: boolean }
+        truncation_reasons: { type: array, items: { $ref: '#/components/schemas/TruncationReason' } }

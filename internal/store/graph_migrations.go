@@ -143,6 +143,13 @@ BEFORE UPDATE OF id, namespace, version ON graph_tasks
 BEGIN
  SELECT RAISE(ABORT, 'graph task snapshot association is immutable');
 END;
+`}, {component: "graph", version: 2, sql: `
+CREATE INDEX graph_edges_query_outgoing_idx
+ON graph_edges(namespace,version,from_node_id,relation_kind,edge_type,edge_id);
+CREATE INDEX graph_edges_query_incoming_idx
+ON graph_edges(namespace,version,to_node_id,relation_kind,edge_type,edge_id);
+CREATE INDEX graph_nodes_query_type_idx
+ON graph_nodes(namespace,version,node_type,node_id);
 `}}
 
 // runGraphMigrations owns a ledger separate from legacy schema setup. Each

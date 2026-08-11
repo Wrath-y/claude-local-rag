@@ -21,6 +21,10 @@ const (
 	CodeSnapshotNotReady              Code = "SNAPSHOT_NOT_READY"
 	CodeActiveSnapshotDeleteForbidden Code = "ACTIVE_SNAPSHOT_DELETE_FORBIDDEN"
 	CodeSnapshotWriteInProgress       Code = "SNAPSHOT_WRITE_IN_PROGRESS"
+	CodeInvalidGraphQuery             Code = "INVALID_GRAPH_QUERY"
+	CodeLimitExceeded                 Code = "LIMIT_EXCEEDED"
+	CodeNoActiveSnapshot              Code = "NO_ACTIVE_SNAPSHOT"
+	CodeNodeNotFound                  Code = "NODE_NOT_FOUND"
 	CodeGraphStoreUnavailable         Code = "GRAPH_STORE_UNAVAILABLE"
 	CodeInternalError                 Code = "INTERNAL_ERROR"
 )
@@ -46,6 +50,10 @@ var errorCatalog = map[Code]errorDefinition{
 	CodeSnapshotNotReady:              {"Snapshot is not ready", false},
 	CodeActiveSnapshotDeleteForbidden: {"Active snapshot cannot be deleted", false},
 	CodeSnapshotWriteInProgress:       {"Snapshot has an active writer", false},
+	CodeInvalidGraphQuery:             {"Graph query is invalid", false},
+	CodeLimitExceeded:                 {"Graph query limit is exceeded", false},
+	CodeNoActiveSnapshot:              {"No active snapshot is available", false},
+	CodeNodeNotFound:                  {"Graph node was not found", false},
 	CodeGraphStoreUnavailable:         {"Graph storage is unavailable", true},
 	CodeInternalError:                 {"Graph lifecycle operation failed", false},
 }

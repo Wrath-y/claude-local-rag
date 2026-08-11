@@ -23,7 +23,7 @@ func TestOpenAPIGraphLifecycleDocumentHasRequiredSurface(t *testing.T) {
 	if !ok {
 		t.Fatal("paths missing")
 	}
-	for _, path := range []string{"/v1/graphs/{namespace}/snapshots/{version}", "/v1/graphs/{namespace}/snapshots/{version}/activate", "/v1/tasks/{task_id}"} {
+	for _, path := range []string{"/v1/graphs/{namespace}/snapshots/{version}", "/v1/graphs/{namespace}/snapshots/{version}/activate", "/v1/graphs/{namespace}/traverse", "/v1/graphs/{namespace}/paths", "/v1/tasks/{task_id}"} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("path %s missing", path)
 		}

@@ -1,0 +1,1 @@
+{"code":"SNAPSHOT_INDEX_NOT_READY","message":"Snapshot retrieval indexes are not ready","retryable":false,"details":{"rebuild_required":true},"request_id":"fixture_request"}

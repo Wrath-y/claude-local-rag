@@ -54,4 +54,19 @@ func TestBuildGraphVectorsUsesBoundedBatchesAndCoversEveryDocument(t *testing.T)
 	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE namespace='project' AND version='batching' AND generation='vector-batching-task'`).Scan(&items); err != nil || items != len(nodes) {
 		t.Fatalf("vector items=%d err=%v", items, err)
 	}
+	var ftsGeneration, ftsAlgorithm, ftsTokenizer, ftsDigest string
+	if err = s.DB().QueryRow(`SELECT generation,algorithm,tokenizer,content_digest FROM graph_retrieval_generations WHERE namespace='project' AND version='batching' AND component='fts' AND selected=1`).Scan(&ftsGeneration, &ftsAlgorithm, &ftsTokenizer, &ftsDigest); err != nil {
+		t.Fatal(err)
+	}
+	if ftsGeneration != "fts-batching-task" || ftsAlgorithm != graphsnapshot.SearchDocumentFormatV1+"/fts5" || ftsTokenizer != "unicode61" || len(ftsDigest) != 64 {
+		t.Fatalf("fts metadata generation=%q algorithm=%q tokenizer=%q digest=%q", ftsGeneration, ftsAlgorithm, ftsTokenizer, ftsDigest)
+	}
+	var vectorGeneration, vectorAlgorithm, vectorDigest string
+	var dimensions int
+	if err = s.DB().QueryRow(`SELECT generation,algorithm,dimensions,content_digest FROM graph_retrieval_generations WHERE namespace='project' AND version='batching' AND component='vector' AND selected=1`).Scan(&vectorGeneration, &vectorAlgorithm, &dimensions, &vectorDigest); err != nil {
+		t.Fatal(err)
+	}
+	if vectorGeneration != "vector-batching-task" || vectorAlgorithm != graphsnapshot.SearchDocumentFormatV1+"/embedding" || dimensions != 4 || len(vectorDigest) != 64 {
+		t.Fatalf("vector metadata generation=%q algorithm=%q dimensions=%d digest=%q", vectorGeneration, vectorAlgorithm, dimensions, vectorDigest)
+	}
 }

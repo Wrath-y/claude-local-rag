@@ -61,6 +61,20 @@ func (s *Store) BuildGraphVectors(ctx context.Context, taskID string, embedder g
 		vectors = append(vectors, batch...)
 	}
 	generation := "vector-" + taskID
+	identity := graphsnapshot.EmbeddingIdentity{Algorithm: graphsnapshot.SearchDocumentFormatV1 + "/embedding", Dimensions: s.dims}
+	if identified, ok := embedder.(graphsnapshot.IdentifiedEmbedder); ok {
+		identity = identified.EmbeddingIdentity()
+	}
+	if identity.Algorithm == "" {
+		identity.Algorithm = graphsnapshot.SearchDocumentFormatV1 + "/embedding"
+	}
+	if identity.Dimensions == 0 {
+		identity.Dimensions = s.dims
+	}
+	digestParts := []string{identity.Algorithm, identity.Provider, identity.Model, generation}
+	for i := range inputs {
+		digestParts = append(digestParts, inputs[i].kind, inputs[i].id, string(Float32ToBytes(vectors[i])))
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -89,11 +103,20 @@ func (s *Store) BuildGraphVectors(ctx context.Context, taskID string, embedder g
 	if count != len(inputs) {
 		return fmt.Errorf("graph vector generation coverage mismatch")
 	}
+	dimensions := identity.Dimensions
+	if err = upsertSelectedGraphRetrievalGenerationForSnapshot(tx, namespace, version, graphRetrievalGeneration{
+		Component: "vector", Generation: generation, Algorithm: identity.Algorithm, Provider: identity.Provider, Model: identity.Model, Dimensions: &dimensions, Digest: graphDerivedDigest(digestParts...),
+	}); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='ready',generation=? WHERE namespace=? AND version=? AND component='vector'`, generation, namespace, version); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return s.ReconcileGraphSnapshot(ctx, namespace, version)
+	if err = s.ReconcileGraphSnapshot(ctx, namespace, version); err != nil {
+		return err
+	}
+	return s.ApplyGraphRetrievalRetention(ctx, namespace)
 }

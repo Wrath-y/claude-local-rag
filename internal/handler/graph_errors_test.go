@@ -36,6 +36,28 @@ func TestGraphRequestIDUsesValidCallerValueAndContext(t *testing.T) {
 	}
 }
 
+func TestGraphOperabilityErrorCodesHaveStableSanitizedMappings(t *testing.T) {
+	for _, testCase := range []struct {
+		code   graphsnapshot.Code
+		status int
+	}{
+		{graphsnapshot.CodeInvalidRebuildRequest, http.StatusBadRequest},
+		{graphsnapshot.CodeIdempotencyConflict, http.StatusConflict},
+		{graphsnapshot.CodeReimportRequired, http.StatusConflict},
+	} {
+		router := gin.New()
+		router.Use(GraphRequestID())
+		router.GET("/", func(c *gin.Context) {
+			writeGraphError(c, graphsnapshot.NewError(testCase.code, map[string]any{"safe": "detail"}, errors.New("secret=do-not-leak /private/path")))
+		})
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		if response.Code != testCase.status || !strings.Contains(response.Body.String(), `"code":"`+string(testCase.code)+`"`) || strings.Contains(response.Body.String(), "secret=do-not-leak") {
+			t.Fatalf("code=%s status=%d body=%s", testCase.code, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestGraphRequestIDReplacesInvalidOrMissingValue(t *testing.T) {
 	for _, supplied := range []string{"", "bad value", strings.Repeat("a", 129), "_bad"} {
 		t.Run("value="+supplied, func(t *testing.T) {
@@ -76,10 +98,16 @@ func TestWriteGraphErrorMapsEveryStableCode(t *testing.T) {
 		graphsnapshot.CodeActiveSnapshotDeleteForbidden: http.StatusConflict,
 		graphsnapshot.CodeSnapshotWriteInProgress:       http.StatusConflict,
 		graphsnapshot.CodeInvalidGraphQuery:             http.StatusBadRequest,
+		graphsnapshot.CodeInvalidRetrievalRequest:       http.StatusBadRequest,
+		graphsnapshot.CodeInvalidRebuildRequest:         http.StatusBadRequest,
 		graphsnapshot.CodeLimitExceeded:                 http.StatusBadRequest,
 		graphsnapshot.CodeNoActiveSnapshot:              http.StatusNotFound,
 		graphsnapshot.CodeNodeNotFound:                  http.StatusNotFound,
 		graphsnapshot.CodeGraphStoreUnavailable:         http.StatusServiceUnavailable,
+		graphsnapshot.CodeSnapshotIndexNotReady:         http.StatusConflict,
+		graphsnapshot.CodeIdempotencyConflict:           http.StatusConflict,
+		graphsnapshot.CodeReimportRequired:              http.StatusConflict,
+		graphsnapshot.CodeRetrievalUnavailable:          http.StatusServiceUnavailable,
 		graphsnapshot.CodeInternalError:                 http.StatusInternalServerError,
 	}
 

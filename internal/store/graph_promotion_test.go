@@ -36,6 +36,14 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	if err := s.PromoteGraphComponent(context.Background(), "promotion-task"); err != nil {
 		t.Fatal(err)
 	}
+	var graphIndexGeneration string
+	if err := s.DB().QueryRow(`SELECT generation FROM graph_retrieval_generations WHERE namespace='project' AND version='revision' AND component='graph_indexes' AND state='selected' AND selected=1`).Scan(&graphIndexGeneration); err != nil || graphIndexGeneration != "graph-indexes-promotion-task" {
+		t.Fatalf("selected graph-index generation=%q err=%v", graphIndexGeneration, err)
+	}
+	var adjacency int
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_index_adjacency WHERE namespace='project' AND version='revision' AND generation=?`, graphIndexGeneration).Scan(&adjacency); err != nil || adjacency != 2 {
+		t.Fatalf("graph-index adjacency=%d err=%v", adjacency, err)
+	}
 	var nodes int
 	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_nodes WHERE namespace='project' AND version='revision'`).Scan(&nodes); err != nil || nodes != 1 {
 		t.Fatalf("nodes=%d err=%v", nodes, err)
@@ -76,6 +84,12 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	if _, err := s.DB().Exec(`INSERT INTO graph_vector_items(namespace,version,generation,entity_kind,entity_id,dimensions) VALUES('project','revision','private-crash','node','private-node',4)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.DB().Exec(`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,content_digest,created_at) VALUES('project','revision','graph_indexes','private-crash-index','private',0,'edge-adjacency-v1',?,?)`, hash, "2026-08-11T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO graph_index_adjacency(namespace,version,generation,direction,node_id,edge_id,relation_kind,edge_type) VALUES('project','revision','private-crash-index','outgoing','node','edge','explicit','kind')`); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.RecoverGraphTasks(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +103,9 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 	}
 	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE generation='private-crash'`).Scan(&private); err != nil || private != 0 {
 		t.Fatalf("private=%d err=%v", private, err)
+	}
+	if err := s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE generation='private-crash-index'`).Scan(&private); err != nil || private != 0 {
+		t.Fatalf("private graph-index generation=%d err=%v", private, err)
 	}
 }
 

@@ -1,0 +1,8 @@
+{
+  "fixture_version": "1.0",
+  "algorithm": {"rrf_k": 60, "graph_score": "seed_rrf_score/(1+hop_count)*path_confidence"},
+  "provider": {"embedding": {"provider": "fake", "model": "fixture", "dimensions": 2}, "rerank": {"provider": "fake", "model": "fixture-rerank"}},
+  "cases": [
+    {"question": "find alpha", "query_embedding": [1, 0], "expected_seed_ids": ["alpha"], "expected_result_ids": ["alpha", "beta"], "expected_generation_ids": {"fts": "fts-fixture", "vector": "vector-fixture"}}
+  ]
+}

@@ -68,6 +68,19 @@ paths:
       responses:
         '200': { description: Deterministic path result, content: { application/json: { schema: { $ref: '#/components/schemas/PathsResult' } } } }
         default: { $ref: '#/components/responses/GraphError' }
+  /v1/graphs/{namespace}/retrieve:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+    post:
+      operationId: retrieveGraph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GraphRetrieveRequest' }
+      responses:
+        '200': { description: Snapshot-bound hybrid graph retrieval result, content: { application/json: { schema: { $ref: '#/components/schemas/GraphRetrieveResponse' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
   /v1/tasks/{task_id}:
     parameters:
       - $ref: '#/components/parameters/TaskID'
@@ -189,7 +202,7 @@ components:
       properties:
         code:
           type: string
-          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, INVALID_GRAPH_QUERY, LIMIT_EXCEEDED, NO_ACTIVE_SNAPSHOT, NODE_NOT_FOUND, GRAPH_STORE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, INVALID_GRAPH_QUERY, INVALID_RETRIEVAL_REQUEST, LIMIT_EXCEEDED, NO_ACTIVE_SNAPSHOT, NODE_NOT_FOUND, GRAPH_STORE_UNAVAILABLE, SNAPSHOT_INDEX_NOT_READY, RETRIEVAL_UNAVAILABLE, INTERNAL_ERROR]
         message: { type: string, minLength: 1 }
         retryable: { type: boolean }
         details: { type: object, additionalProperties: true }
@@ -261,3 +274,89 @@ components:
         edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
         truncated: { type: boolean }
         truncation_reasons: { type: array, items: { $ref: '#/components/schemas/TruncationReason' } }
+    GraphRetrieveRequest:
+      type: object
+      required: [query]
+      additionalProperties: false
+      properties:
+        query: { type: string, minLength: 1 }
+        snapshot_version: { type: string, minLength: 1 }
+        node_types: { type: array, minItems: 1, uniqueItems: true, items: { type: string, minLength: 1 } }
+        edge_types: { type: array, minItems: 1, uniqueItems: true, items: { type: string, minLength: 1 } }
+        relationship_kinds: { type: array, minItems: 1, uniqueItems: true, default: [explicit], items: { type: string, enum: [explicit, inferred] } }
+        seed_limit: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        result_limit: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        graph_depth: { type: integer, minimum: 0, maximum: 3, default: 1 }
+    RetrievalGeneration:
+      type: object
+      required: [component, generation, algorithm, content_digest]
+      properties:
+        component: { type: string, enum: [fts, vector] }
+        generation: { type: string }
+        algorithm: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        dimensions: { type: integer, minimum: 1 }
+        tokenizer: { type: string }
+        content_digest: { $ref: '#/components/schemas/ContentHash' }
+    RetrievalWarning:
+      type: object
+      required: [stage, code, message, retryable]
+      properties:
+        stage: { type: string, enum: [bm25, vector, rerank] }
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+    RetrievalScores:
+      type: object
+      required: [rrf_score, graph_score]
+      description: BM25 and Vector are fused as Σ 1/(60 + one-based-rank); graph_score is rrf_score/(1+hop_count)*path_confidence.
+      properties:
+        bm25_rank: { type: integer, minimum: 1 }
+        bm25_score: { type: number }
+        vector_rank: { type: integer, minimum: 1 }
+        vector_score: { type: number }
+        rrf_score: { type: number }
+        graph_score: { type: number }
+        rerank_score: { type: number }
+    GraphRetrievalEvidence:
+      type: object
+      properties:
+        seed:
+          type: object
+          required: [node_id, search_text]
+          properties: { node_id: { type: string }, search_text: { type: string } }
+        path:
+          type: object
+          required: [node_ids, edge_ids, nodes, edges, explicit_edges, inferred_edges]
+          properties:
+            node_ids: { type: array, items: { type: string } }
+            edge_ids: { type: array, items: { type: string } }
+            nodes: { type: array, items: { $ref: '#/components/schemas/Node' } }
+            edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+            explicit_edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+            inferred_edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+    GraphRetrievalResult:
+      type: object
+      required: [rank, node, citation_text, hop_count, path_confidence, scores, evidence]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        node: { $ref: '#/components/schemas/Node' }
+        citation_text: { type: string }
+        hop_count: { type: integer, minimum: 0 }
+        path_confidence: { type: number, minimum: 0, maximum: 1 }
+        scores: { $ref: '#/components/schemas/RetrievalScores' }
+        evidence: { $ref: '#/components/schemas/GraphRetrievalEvidence' }
+    GraphRetrieveResponse:
+      type: object
+      required: [resolved_snapshot_version, content_hash, mode_used, degraded, warnings, rerank, results]
+      properties:
+        resolved_snapshot_version: { type: string }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        mode_used: { type: string, enum: [hybrid, bm25_only, vector_only] }
+        degraded: { type: boolean }
+        warnings: { type: array, items: { $ref: '#/components/schemas/RetrievalWarning' } }
+        fts_generation: { $ref: '#/components/schemas/RetrievalGeneration' }
+        vector_generation: { $ref: '#/components/schemas/RetrievalGeneration' }
+        rerank: { type: string, enum: [used, unavailable, transient_failure, permanent_failure, index_evicted, skipped] }
+        results: { type: array, items: { $ref: '#/components/schemas/GraphRetrievalResult' } }

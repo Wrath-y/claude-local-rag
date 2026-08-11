@@ -104,12 +104,18 @@ func main() {
 	stores := handler.NewStoreLifecycle(st)
 	defer stores.Close()
 	graphService := graphsnapshot.NewService(st, nil)
+	graphEmbedder := graphsnapshot.WithEmbeddingIdentity(embedder, graphsnapshot.EmbeddingIdentity{
+		Algorithm:  graphsnapshot.SearchDocumentFormatV1 + "/embedding",
+		Provider:   cfg.Embedding.Provider,
+		Model:      cfg.Embedding.Model,
+		Dimensions: cfg.Embedding.Dims,
+	})
 	graphAvailable := true
 	if graphErr := st.GraphUnavailable(); graphErr != nil {
 		graphAvailable = false
 		slog.Error("graph lifecycle unavailable after initialization", "err", graphErr)
 	} else if err := graphService.Start(context.Background(), func(ctx context.Context, task graphsnapshot.Task) error {
-		return graphService.Dispatch(ctx, task, embedder)
+		return graphService.Dispatch(ctx, task, graphEmbedder)
 	}); err != nil {
 		graphAvailable = false
 		slog.Error("graph lifecycle worker start failed", "err", err)
@@ -149,6 +155,7 @@ func main() {
 	v1.DELETE("/graphs/:namespace/snapshots/:version", h.DeleteGraphSnapshot)
 	v1.POST("/graphs/:namespace/traverse", h.TraverseGraph)
 	v1.POST("/graphs/:namespace/paths", h.PathsGraph)
+	v1.POST("/graphs/:namespace/retrieve", h.RetrieveGraph)
 	v1.GET("/tasks/:task_id", h.GetGraphTask)
 
 	// Core routes.

@@ -136,6 +136,136 @@ func TestGraphMigrationCreatesSnapshotCoreTables(t *testing.T) {
 	}
 }
 
+func TestGraphMigrationThreeRegistersLifecycleGenerationsWithoutRebuilding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rag.db")
+	legacy, err := newWithGraphMigrations(path, 4, graphMigrations[:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const namespace = "project-migration"
+	const version = "legacy-version"
+	const taskID = "legacy-task"
+	const hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	const timestamp = "2026-08-10T00:00:00Z"
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO graph_namespaces(namespace,created_at) VALUES(?,?)`, []any{namespace, timestamp}},
+		{`INSERT INTO graph_snapshots(namespace,version,schema_version,content_hash,task_id,status,query_ready,created_at,updated_at) VALUES(?,?,?,?,?,'ready',1,?,?)`, []any{namespace, version, "1.0", hash, taskID, timestamp, timestamp}},
+		{`INSERT INTO graph_snapshot_components(namespace,version,component,state) VALUES(?,?, 'graph','ready')`, []any{namespace, version}},
+		{`INSERT INTO graph_snapshot_components(namespace,version,component,state) VALUES(?,?, 'fts','ready')`, []any{namespace, version}},
+		{`INSERT INTO graph_snapshot_components(namespace,version,component,state,generation) VALUES(?,?, 'vector','ready','vector-legacy')`, []any{namespace, version}},
+		{`INSERT INTO graph_search_documents(namespace,version,entity_kind,entity_id,search_text) VALUES(?,?, 'node','node-legacy','searchable legacy graph text')`, []any{namespace, version}},
+		{`INSERT INTO graph_vector_items(namespace,version,generation,entity_kind,entity_id,dimensions) VALUES(?,?, 'vector-legacy','node','node-legacy',4)`, []any{namespace, version}},
+	} {
+		if _, err = legacy.DB().Exec(statement.query, statement.args...); err != nil {
+			legacy.Close()
+			t.Fatal(err)
+		}
+	}
+	var itemID int64
+	if err = legacy.DB().QueryRow(`SELECT id FROM graph_vector_items WHERE namespace=? AND version=?`, namespace, version).Scan(&itemID); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if _, err = legacy.DB().Exec(`INSERT INTO graph_vectors(item_id,embedding) VALUES(?,?)`, itemID, Float32ToBytes([]float32{1, 0, 0, 0})); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err = legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var generation string
+	if err = upgraded.DB().QueryRow(`SELECT generation FROM graph_search_documents WHERE namespace=? AND version=? AND entity_id='node-legacy'`, namespace, version).Scan(&generation); err != nil || generation != "fts-"+taskID {
+		t.Fatalf("fts generation=%q err=%v", generation, err)
+	}
+	for _, want := range []struct{ component, generation string }{{"fts", "fts-" + taskID}, {"vector", "vector-legacy"}} {
+		var state string
+		if err = upgraded.DB().QueryRow(`SELECT state FROM graph_retrieval_generations WHERE namespace=? AND version=? AND component=? AND generation=?`, namespace, version, want.component, want.generation).Scan(&state); err != nil || state != "selected" {
+			t.Fatalf("%s generation state=%q err=%v", want.component, state, err)
+		}
+	}
+	var ftsRows, vectorRows, vectorBacking, migrations int
+	if err = upgraded.DB().QueryRow(`SELECT count(*) FROM graph_search_fts WHERE graph_search_fts MATCH 'searchable'`).Scan(&ftsRows); err != nil || ftsRows != 1 {
+		t.Fatalf("fts rows=%d err=%v", ftsRows, err)
+	}
+	if err = upgraded.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE namespace=? AND version=? AND generation='vector-legacy'`, namespace, version).Scan(&vectorRows); err != nil || vectorRows != 1 {
+		t.Fatalf("vector rows=%d err=%v", vectorRows, err)
+	}
+	if err = upgraded.DB().QueryRow(`SELECT count(*) FROM graph_vectors WHERE item_id=?`, itemID).Scan(&vectorBacking); err != nil || vectorBacking != 1 {
+		t.Fatalf("vector backing rows=%d err=%v", vectorBacking, err)
+	}
+	if err = upgraded.DB().QueryRow(`SELECT count(*) FROM schema_migrations WHERE component='graph' AND version=3`).Scan(&migrations); err != nil || migrations != 1 {
+		t.Fatalf("graph/3 ledger entries=%d err=%v", migrations, err)
+	}
+}
+
+func TestGraphMigrationFourPreservesGraphThreeRecordsAndRejectsChecksumChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rag.db")
+	legacy, err := newWithGraphMigrations(path, 4, graphMigrations[:3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const namespace = "operability-upgrade"
+	const version = "v3"
+	const taskID = "build-v3"
+	const hash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	const timestamp = "2026-08-11T00:00:00Z"
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO graph_namespaces(namespace,created_at) VALUES(?,?)`, []any{namespace, timestamp}},
+		{`INSERT INTO graph_snapshots(namespace,version,schema_version,content_hash,task_id,status,query_ready,created_at,updated_at) VALUES(?,?,?,?,?,'ready',1,?,?)`, []any{namespace, version, "1.0", hash, taskID, timestamp, timestamp}},
+		{`INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,created_at) VALUES(?,?,?,'succeeded','completed',100,?)`, []any{taskID, namespace, version, timestamp}},
+		{`INSERT INTO graph_nodes(namespace,version,node_id,node_type,label,text,properties_json,provenance_json) VALUES(?,?, 'node','kind','label','text','{}','{}')`, []any{namespace, version}},
+		{`INSERT INTO graph_snapshot_components(namespace,version,component,state,generation) VALUES(?,?, 'fts','ready','fts-v3')`, []any{namespace, version}},
+		{`INSERT INTO graph_snapshot_components(namespace,version,component,state,generation) VALUES(?,?, 'vector','ready','vector-v3')`, []any{namespace, version}},
+		{`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,content_digest,created_at) VALUES(?,?, 'fts','fts-v3','selected',1,'fts5',?,?)`, []any{namespace, version, hash, timestamp}},
+		{`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,dimensions,content_digest,created_at) VALUES(?,?, 'vector','vector-v3','selected',1,'vec',4,?,?)`, []any{namespace, version, hash, timestamp}},
+	} {
+		if _, err = legacy.DB().Exec(statement.query, statement.args...); err != nil {
+			_ = legacy.Close()
+			t.Fatal(err)
+		}
+	}
+	if err = legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	upgraded, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	var gotHash, operation, sourceHash string
+	var progress int
+	if err = upgraded.DB().QueryRow(`SELECT s.content_hash,t.operation,t.source_hash,t.progress FROM graph_snapshots s JOIN graph_tasks t ON t.namespace=s.namespace AND t.version=s.version WHERE s.namespace=? AND s.version=?`, namespace, version).Scan(&gotHash, &operation, &sourceHash, &progress); err != nil {
+		t.Fatal(err)
+	}
+	if gotHash != hash || sourceHash != hash || operation != "snapshot_build" || progress != 10000 {
+		t.Fatalf("graph/4 task migration hash=%q source=%q operation=%q progress=%d", gotHash, sourceHash, operation, progress)
+	}
+	for _, component := range []string{"fts", "vector"} {
+		var selected int
+		if err = upgraded.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace=? AND version=? AND component=? AND state='selected' AND selected=1`, namespace, version, component).Scan(&selected); err != nil || selected != 1 {
+			t.Fatalf("%s selected rows=%d err=%v", component, selected, err)
+		}
+	}
+	changed := append([]graphMigration(nil), graphMigrations...)
+	changed[3].sql += "\n-- edited historical migration"
+	if err = runGraphMigrations(upgraded.DB(), changed); err == nil {
+		t.Fatal("accepted changed graph/4 checksum")
+	}
+}
+
 func TestGraphSearchAndVectorRowsAreScopedAndCleanedUp(t *testing.T) {
 	s, err := New(t.TempDir()+"/rag.db", 4)
 	if err != nil {
@@ -209,6 +339,9 @@ func TestGraphMigrationDefinesScopedIndexesAndUsesThemForScopedQueries(t *testin
 		"graph_edges_namespace_version_to_idx":                   "graph_edges(namespace,version,to_node_id,edge_id)",
 		"graph_search_documents_namespace_version_id_idx":        "graph_search_documents(namespace,version,id)",
 		"graph_vector_items_namespace_version_generation_id_idx": "graph_vector_items(namespace,version,generation,id)",
+		"graph_task_steps_state_idx":                              "graph_task_steps(task_id,state,component)",
+		"graph_rebuild_idempotency_task_idx":                      "graph_rebuild_idempotency(task_id)",
+		"graph_index_adjacency_lookup_idx":                        "graph_index_adjacency(namespace,version,generation,direction,node_id,relation_kind,edge_type,edge_id)",
 	} {
 		var definition string
 		if err := s.DB().QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, name).Scan(&definition); err != nil {
@@ -227,6 +360,7 @@ func TestGraphMigrationDefinesScopedIndexesAndUsesThemForScopedQueries(t *testin
 	assertQueryPlanUses(t, s, `SELECT edge_id FROM graph_edges WHERE namespace=? AND version=? AND to_node_id=?`, "graph_edges_namespace_version_to_idx", "namespace", "version", "node")
 	assertQueryPlanUses(t, s, `SELECT id FROM graph_search_documents WHERE namespace=? AND version=? ORDER BY id`, "graph_search_documents_namespace_version_id_idx", "namespace", "version")
 	assertQueryPlanUses(t, s, `SELECT id FROM graph_vector_items WHERE namespace=? AND version=? AND generation=? ORDER BY id`, "graph_vector_items_namespace_version_generation_id_idx", "namespace", "version", "generation")
+	assertQueryPlanUses(t, s, `SELECT edge_id FROM graph_index_adjacency WHERE namespace=? AND version=? AND generation=? AND direction=? AND node_id=? AND relation_kind=? AND edge_type=?`, "graph_index_adjacency_lookup_idx", "namespace", "version", "generation", "outgoing", "node", "explicit", "kind")
 }
 
 func TestGraphMigrationEnforcesLifecycleConstraintsAndImmutability(t *testing.T) {

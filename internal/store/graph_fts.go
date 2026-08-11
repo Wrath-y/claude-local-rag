@@ -18,6 +18,8 @@ func (s *Store) PopulateGraphSearchDocuments(ctx context.Context, taskID string)
 	if err != nil {
 		return err
 	}
+	generation := "fts-" + taskID
+	digestParts := []string{"fts5", graphsnapshot.SearchDocumentFormatV1, generation}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -31,7 +33,8 @@ func (s *Store) PopulateGraphSearchDocuments(ctx context.Context, taskID string)
 		if e != nil {
 			return e
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO graph_search_documents(namespace,version,entity_kind,entity_id,search_text) VALUES(?,?, 'node',?,?)`, namespace, version, graph.Nodes[i].ID, text); err != nil {
+		digestParts = append(digestParts, "node", graph.Nodes[i].ID, text)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO graph_search_documents(namespace,version,generation,entity_kind,entity_id,search_text) VALUES(?,?,?, 'node',?,?)`, namespace, version, generation, graph.Nodes[i].ID, text); err != nil {
 			return err
 		}
 	}
@@ -40,7 +43,8 @@ func (s *Store) PopulateGraphSearchDocuments(ctx context.Context, taskID string)
 		if e != nil {
 			return e
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO graph_search_documents(namespace,version,entity_kind,entity_id,search_text) VALUES(?,?, 'edge',?,?)`, namespace, version, graph.Edges[i].ID, text); err != nil {
+		digestParts = append(digestParts, "edge", graph.Edges[i].ID, text)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO graph_search_documents(namespace,version,generation,entity_kind,entity_id,search_text) VALUES(?,?,?, 'edge',?,?)`, namespace, version, generation, graph.Edges[i].ID, text); err != nil {
 			return err
 		}
 	}
@@ -51,7 +55,12 @@ func (s *Store) PopulateGraphSearchDocuments(ctx context.Context, taskID string)
 	if count != len(graph.Nodes)+len(graph.Edges) {
 		return fmt.Errorf("graph search document coverage mismatch")
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='ready' WHERE namespace=? AND version=? AND component='fts'`, namespace, version); err != nil {
+	if err = upsertSelectedGraphRetrievalGenerationForSnapshot(tx, namespace, version, graphRetrievalGeneration{
+		Component: "fts", Generation: generation, Algorithm: graphsnapshot.SearchDocumentFormatV1 + "/fts5", Tokenizer: "unicode61", Digest: graphDerivedDigest(digestParts...),
+	}); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='ready',generation=? WHERE namespace=? AND version=? AND component='fts'`, generation, namespace, version); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

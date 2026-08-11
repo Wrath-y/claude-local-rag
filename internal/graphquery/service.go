@@ -436,9 +436,18 @@ func compareStrings(a, b []string) int {
 func matchesEdge(edge graphsnapshot.Edge, filter Filter) bool {
 	return contains(filter.RelationshipKinds, edge.RelationKind) && (len(filter.EdgeTypes) == 0 || contains(filter.EdgeTypes, edge.Type))
 }
+
+// MatchesEdge exposes the constrained-query filter semantics to graph
+// retrieval without giving it a second interpretation of stored edges.
+func MatchesEdge(edge graphsnapshot.Edge, edgeTypes, relationshipKinds []string) bool {
+	return matchesEdge(edge, Filter{EdgeTypes: edgeTypes, RelationshipKinds: relationshipKinds})
+}
 func matchesNode(node graphsnapshot.Node, types []string) bool {
 	return len(types) == 0 || contains(types, node.Type)
 }
+
+// MatchesNode exposes the constrained-query exact type-filter semantics.
+func MatchesNode(node graphsnapshot.Node, types []string) bool { return matchesNode(node, types) }
 func contains(values []string, value string) bool {
 	for _, item := range values {
 		if item == value {
@@ -466,6 +475,11 @@ func neighborFor(edge graphsnapshot.Edge, current string, direction Direction) (
 		}
 	}
 	return "", false
+}
+
+// NeighborFor preserves the stored edge orientation used by traverse/paths.
+func NeighborFor(edge graphsnapshot.Edge, current string, direction Direction) (string, bool) {
+	return neighborFor(edge, current, direction)
 }
 func sortedMapKeys[V any](values map[string]V) []string {
 	result := make([]string, 0, len(values))

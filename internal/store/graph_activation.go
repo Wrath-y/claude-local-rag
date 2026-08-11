@@ -38,5 +38,8 @@ func (s *Store) ActivateGraphSnapshot(ctx context.Context, namespace, version st
 	if err = tx.Commit(); err != nil {
 		return false, err
 	}
+	if err = s.ApplyGraphRetrievalRetention(ctx, namespace); err != nil {
+		return false, err
+	}
 	return true, nil
 }

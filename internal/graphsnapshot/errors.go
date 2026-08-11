@@ -22,10 +22,16 @@ const (
 	CodeActiveSnapshotDeleteForbidden Code = "ACTIVE_SNAPSHOT_DELETE_FORBIDDEN"
 	CodeSnapshotWriteInProgress       Code = "SNAPSHOT_WRITE_IN_PROGRESS"
 	CodeInvalidGraphQuery             Code = "INVALID_GRAPH_QUERY"
+	CodeInvalidRetrievalRequest       Code = "INVALID_RETRIEVAL_REQUEST"
+	CodeInvalidRebuildRequest         Code = "INVALID_REBUILD_REQUEST"
 	CodeLimitExceeded                 Code = "LIMIT_EXCEEDED"
 	CodeNoActiveSnapshot              Code = "NO_ACTIVE_SNAPSHOT"
 	CodeNodeNotFound                  Code = "NODE_NOT_FOUND"
 	CodeGraphStoreUnavailable         Code = "GRAPH_STORE_UNAVAILABLE"
+	CodeSnapshotIndexNotReady         Code = "SNAPSHOT_INDEX_NOT_READY"
+	CodeIdempotencyConflict           Code = "IDEMPOTENCY_CONFLICT"
+	CodeReimportRequired              Code = "REIMPORT_REQUIRED"
+	CodeRetrievalUnavailable          Code = "RETRIEVAL_UNAVAILABLE"
 	CodeInternalError                 Code = "INTERNAL_ERROR"
 )
 
@@ -51,10 +57,16 @@ var errorCatalog = map[Code]errorDefinition{
 	CodeActiveSnapshotDeleteForbidden: {"Active snapshot cannot be deleted", false},
 	CodeSnapshotWriteInProgress:       {"Snapshot has an active writer", false},
 	CodeInvalidGraphQuery:             {"Graph query is invalid", false},
+	CodeInvalidRetrievalRequest:       {"Retrieval request is invalid", false},
+	CodeInvalidRebuildRequest:         {"Graph rebuild request is invalid", false},
 	CodeLimitExceeded:                 {"Graph query limit is exceeded", false},
 	CodeNoActiveSnapshot:              {"No active snapshot is available", false},
 	CodeNodeNotFound:                  {"Graph node was not found", false},
 	CodeGraphStoreUnavailable:         {"Graph storage is unavailable", true},
+	CodeSnapshotIndexNotReady:         {"Snapshot retrieval indexes are not ready", false},
+	CodeIdempotencyConflict:           {"Idempotency key conflicts with existing rebuild work", false},
+	CodeReimportRequired:              {"Graph snapshot must be reimported before rebuild", false},
+	CodeRetrievalUnavailable:          {"Graph retrieval is unavailable", true},
 	CodeInternalError:                 {"Graph lifecycle operation failed", false},
 }
 
@@ -91,6 +103,13 @@ func (e *Error) WithDetail(key string, value any) *Error {
 		e.Details = map[string]any{}
 	}
 	e.Details[key] = value
+	return e
+}
+
+// WithRetryability is reserved for stable dependency errors whose retry rule
+// depends on the observed stage outcomes rather than the code alone.
+func (e *Error) WithRetryability(retryable bool) *Error {
+	e.Retryable = retryable
 	return e
 }
 

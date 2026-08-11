@@ -86,10 +86,16 @@ var graphErrorStatuses = map[graphsnapshot.Code]int{
 	graphsnapshot.CodeActiveSnapshotDeleteForbidden: http.StatusConflict,
 	graphsnapshot.CodeSnapshotWriteInProgress:       http.StatusConflict,
 	graphsnapshot.CodeInvalidGraphQuery:             http.StatusBadRequest,
+	graphsnapshot.CodeInvalidRetrievalRequest:       http.StatusBadRequest,
+	graphsnapshot.CodeInvalidRebuildRequest:         http.StatusBadRequest,
 	graphsnapshot.CodeLimitExceeded:                 http.StatusBadRequest,
 	graphsnapshot.CodeNoActiveSnapshot:              http.StatusNotFound,
 	graphsnapshot.CodeNodeNotFound:                  http.StatusNotFound,
 	graphsnapshot.CodeGraphStoreUnavailable:         http.StatusServiceUnavailable,
+	graphsnapshot.CodeSnapshotIndexNotReady:         http.StatusConflict,
+	graphsnapshot.CodeIdempotencyConflict:           http.StatusConflict,
+	graphsnapshot.CodeReimportRequired:              http.StatusConflict,
+	graphsnapshot.CodeRetrievalUnavailable:          http.StatusServiceUnavailable,
 	graphsnapshot.CodeInternalError:                 http.StatusInternalServerError,
 }
 
@@ -111,7 +117,11 @@ func writeGraphError(c *gin.Context, graphErr *graphsnapshot.Error) {
 	if _, known := graphErrorStatuses[graphErr.Code]; !known {
 		graphErr = graphsnapshot.NewError(graphsnapshot.CodeInternalError, nil, graphErr)
 	} else {
+		retryable := graphErr.Retryable
 		graphErr = graphsnapshot.NewError(graphErr.Code, graphErr.Details, graphErr.Cause)
+		if graphErr.Code == graphsnapshot.CodeRetrievalUnavailable {
+			graphErr.WithRetryability(retryable)
+		}
 	}
 
 	if graphErr.Cause != nil {

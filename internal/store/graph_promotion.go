@@ -2,8 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
@@ -55,8 +59,46 @@ func (s *Store) PromoteGraphComponent(ctx context.Context, taskID string) error 
 	if nodes != len(manifest.Nodes) || edges != len(manifest.Edges) {
 		return fmt.Errorf("graph promotion count mismatch")
 	}
+	if err = createInitialGraphIndexGeneration(ctx, tx, namespace, version, taskID, manifest.Edges); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='ready' WHERE namespace=? AND version=? AND component='graph'`, namespace, version); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// createInitialGraphIndexGeneration gives new graph/4 snapshots a selected,
+// generation-addressable adjacency view. Query readers still use immutable
+// graph_edges until they opt into the generation seam, preserving direct reads
+// for every graph/1..3 snapshot.
+func createInitialGraphIndexGeneration(ctx context.Context, tx *sql.Tx, namespace, version, taskID string, edges []graphsnapshot.Edge) error {
+	generation := "graph-indexes-" + taskID
+	digest := graphIndexDigest(edges)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,content_digest,created_at)
+VALUES(?,?, 'graph_indexes',?,'selected',1,'edge-adjacency-v1',?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, namespace, version, generation, digest); err != nil {
+		return fmt.Errorf("create graph-index generation: %w", err)
+	}
+	for _, edge := range edges {
+		for _, entry := range []struct {
+			direction string
+			nodeID    string
+		}{{direction: "outgoing", nodeID: edge.From}, {direction: "incoming", nodeID: edge.To}} {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO graph_index_adjacency(namespace,version,generation,direction,node_id,edge_id,relation_kind,edge_type)
+VALUES(?,?,?,?,?,?,?,?)`, namespace, version, generation, entry.direction, entry.nodeID, edge.ID, edge.RelationKind, edge.Type); err != nil {
+				return fmt.Errorf("create graph-index adjacency: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func graphIndexDigest(edges []graphsnapshot.Edge) string {
+	ordered := append([]graphsnapshot.Edge(nil), edges...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	hash := sha256.New()
+	for _, edge := range ordered {
+		_, _ = hash.Write([]byte(edge.ID + "\x00" + edge.From + "\x00" + edge.To + "\x00" + edge.Type + "\x00" + edge.RelationKind + "\n"))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }

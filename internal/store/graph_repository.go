@@ -53,9 +53,9 @@ func (s *Store) LookupGraphTask(ctx context.Context, id string) (graphsnapshot.T
 	}
 	var task graphsnapshot.Task
 	var createdAt string
-	var startedAt, finishedAt, errorJSON sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,version,state,phase,progress,created_at,started_at,finished_at,error_json FROM graph_tasks WHERE id=?`, id).Scan(
-		&task.ID, &task.Namespace, &task.Version, &task.State, &task.Phase, &task.Progress, &createdAt, &startedAt, &finishedAt, &errorJSON,
+	var startedAt, finishedAt, errorJSON, resultJSON, warningsJSON, sourceHash, submissionRequestID sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,version,operation,phase,progress,created_at,started_at,finished_at,warnings_json,error_json,result_json,source_hash,submission_request_id,state FROM graph_tasks WHERE id=?`, id).Scan(
+		&task.ID, &task.Namespace, &task.Version, &task.Operation, &task.Phase, &task.Progress, &createdAt, &startedAt, &finishedAt, &warningsJSON, &errorJSON, &resultJSON, &sourceHash, &submissionRequestID, &task.State,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return graphsnapshot.Task{}, false, nil
@@ -79,6 +79,20 @@ func (s *Store) LookupGraphTask(ctx context.Context, id string) (graphsnapshot.T
 			return graphsnapshot.Task{}, false, fmt.Errorf("decode graph task error: %w", err)
 		}
 		task.Error = &graphErr
+	}
+	if warningsJSON.Valid {
+		if err := json.Unmarshal([]byte(warningsJSON.String), &task.Warnings); err != nil {
+			return graphsnapshot.Task{}, false, fmt.Errorf("decode graph task warnings: %w", err)
+		}
+	}
+	if resultJSON.Valid {
+		task.Result = json.RawMessage(resultJSON.String)
+	}
+	if sourceHash.Valid {
+		task.SourceHash = sourceHash.String
+	}
+	if submissionRequestID.Valid {
+		task.SubmissionRequestID = submissionRequestID.String
 	}
 	return task, true, nil
 }

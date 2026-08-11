@@ -17,5 +17,11 @@ func (s *Store) RecoverGraphTasks(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `DELETE FROM graph_vector_items AS item WHERE NOT EXISTS (SELECT 1 FROM graph_snapshot_components AS component WHERE component.namespace=item.namespace AND component.version=item.version AND component.component='vector' AND component.generation=item.generation)`); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM graph_index_adjacency AS adjacency WHERE NOT EXISTS (SELECT 1 FROM graph_retrieval_generations AS generation WHERE generation.namespace=adjacency.namespace AND generation.version=adjacency.version AND generation.component='graph_indexes' AND generation.generation=adjacency.generation AND generation.selected=1 AND generation.state='selected')`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM graph_retrieval_generations WHERE component='graph_indexes' AND selected=0 AND state IN ('private','validated','discarded')`); err != nil {
+		return err
+	}
 	return tx.Commit()
 }

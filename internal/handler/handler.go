@@ -8,6 +8,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/document"
 	"github.com/Wrath-y/local-rag/internal/graphquery"
+	"github.com/Wrath-y/local-rag/internal/graphretrieval"
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/observe"
@@ -34,6 +35,8 @@ type Deps struct {
 	GraphSnapshotReader graphsnapshot.ExistingSnapshotReader
 	GraphTaskReader     GraphTaskReader
 	GraphLifecycle      GraphSnapshotLifecycle
+	GraphRetrieval      GraphRetrievalService
+	GraphRebuild        GraphRebuildService
 	// LoaderRegistry and FeishuResolver make input resolution explicit and
 	// replaceable in tests. A nil resolver safely rejects Feishu URLs.
 	LoaderRegistry *document.Registry
@@ -55,6 +58,8 @@ type Handler struct {
 	graphTaskReader  GraphTaskReader
 	graphLifecycle   GraphSnapshotLifecycle
 	graphQuery       *graphquery.Service
+	graphRetrieval   GraphRetrievalService
+	graphRebuild     GraphRebuildService
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -96,11 +101,22 @@ func New(deps Deps) *Handler {
 		graphReader:          deps.GraphSnapshotReader,
 		graphTaskReader:      deps.GraphTaskReader,
 		graphLifecycle:       deps.GraphLifecycle,
+		graphRetrieval:       deps.GraphRetrieval,
+		graphRebuild:         deps.GraphRebuild,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
 	}
 	if deps.Stores != nil {
 		h.graphQuery = &graphquery.Service{Repository: lifecycleGraphReadRepository{stores: deps.Stores}}
+		if h.graphRetrieval == nil {
+			identity := graphretrieval.ProviderIdentity{}
+			queryPrefix := ""
+			if deps.Config != nil {
+				identity = graphretrieval.ProviderIdentity{Provider: deps.Config.Embedding.Provider, Model: deps.Config.Embedding.Model, Algorithm: graphsnapshot.SearchDocumentFormatV1 + "/embedding"}
+				queryPrefix = deps.Config.Embedding.QueryPrefix
+			}
+			h.graphRetrieval = graphretrieval.Service{Repository: lifecycleGraphRetrievalRepository{stores: deps.Stores}, Embedder: graphretrieval.EmbeddingAdapter{Provider: deps.Embedder, Identity: identity, QueryPrefix: queryPrefix}, Reranker: graphretrieval.RerankAdapter{Provider: handlerReranker{provider: deps.Reranker}}, RerankEnabled: deps.Reranker != nil}
+		}
 	}
 	if deps.LoaderRegistry == nil {
 		deps.LoaderRegistry = document.BuiltinRegistryWithOptions(deps.FeishuResolver, connectorOptions(deps.Config))

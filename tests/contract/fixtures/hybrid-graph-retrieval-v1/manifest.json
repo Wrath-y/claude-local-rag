@@ -1,0 +1,11 @@
+{
+  "fixture_version": "1.0",
+  "algorithm": "sha256",
+  "files": {
+    "retrieve-request.json": "027c9529b70b158d179bbbb132af25770c5eb60915b905fbc57934afc11cc683",
+    "hybrid-response.json": "f5acf640a27a2b1b7fd81ce557ce3f31036f9fd013987645976edd23afc77202",
+    "evicted-error.json": "e8320b01aa97b8a424459ee1f20d57e2c208e349372509e0731008c9502c8241",
+    "rebuild-restored-response.json": "54734a00a1b6ad83553d8afb1e8cfc1bcb845c0f8fb924fefa8ed3b0426134c8",
+    "eco-guardian-consumer-transcript.json": "10b67a28d42c3c6e5e65be338c6e88af7f8bf3d9f9644ea0b07443053d424d73"
+  }
+}

@@ -120,16 +120,21 @@ type Snapshot struct {
 }
 
 type Task struct {
-	ID         string     `json:"id"`
-	Namespace  string     `json:"namespace"`
-	Version    string     `json:"version"`
-	State      TaskState  `json:"state"`
-	Phase      string     `json:"phase"`
-	Progress   int        `json:"progress"`
-	CreatedAt  time.Time  `json:"created_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	Error      *Error     `json:"error,omitempty"`
+	ID                  string          `json:"task_id"`
+	Operation           string          `json:"operation"`
+	Namespace           string          `json:"namespace"`
+	Version             string          `json:"snapshot_version"`
+	State               TaskState       `json:"state"`
+	Phase               string          `json:"phase"`
+	Progress            int             `json:"progress"`
+	Warnings            []string        `json:"warnings"`
+	SourceHash          string          `json:"source_hash,omitempty"`
+	SubmissionRequestID string          `json:"submission_request_id,omitempty"`
+	CreatedAt           time.Time       `json:"created_at"`
+	StartedAt           *time.Time      `json:"started_at,omitempty"`
+	FinishedAt          *time.Time      `json:"finished_at,omitempty"`
+	Result              json.RawMessage `json:"result,omitempty"`
+	Error               *Error          `json:"error,omitempty"`
 }
 
 // DecodeRequest rejects duplicate object members at every depth and preserves
@@ -140,23 +145,33 @@ func DecodeRequest(reader io.Reader) (Request, error) {
 	if err != nil {
 		return Request{}, fmt.Errorf("read graph request: %w", err)
 	}
-	if err := rejectDuplicateMembers(body); err != nil {
+	var request Request
+	if err := DecodeStrictJSON(body, &request); err != nil {
 		return Request{}, err
+	}
+	return request, nil
+}
+
+// DecodeStrictJSON is the shared /v1 JSON binding primitive. It rejects
+// duplicate members at every depth, unknown fields, and trailing values while
+// retaining numeric tokens for callers that need canonical validation.
+func DecodeStrictJSON(body []byte, target any) error {
+	if err := rejectDuplicateMembers(body); err != nil {
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
-	var request Request
-	if err := decoder.Decode(&request); err != nil {
-		return Request{}, fmt.Errorf("decode graph request: %w", err)
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("decode graph request: %w", err)
 	}
 	if token, err := decoder.Token(); err != io.EOF {
 		if err == nil {
-			return Request{}, fmt.Errorf("decode graph request: trailing value %v", token)
+			return fmt.Errorf("decode graph request: trailing value %v", token)
 		}
-		return Request{}, fmt.Errorf("decode graph request: %w", err)
+		return fmt.Errorf("decode graph request: %w", err)
 	}
-	return request, nil
+	return nil
 }
 
 func rejectDuplicateMembers(body []byte) error {

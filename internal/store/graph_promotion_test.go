@@ -91,3 +91,38 @@ func TestPromoteGraphComponentMaterializesVerifiedStaging(t *testing.T) {
 		t.Fatalf("private=%d err=%v", private, err)
 	}
 }
+
+func TestPromoteGraphComponentRollsBackAllRowsOnWriteFailure(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	node := graphsnapshot.Node{ID: "node", Type: "kind", Label: "label", Text: "text", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	edge := graphsnapshot.Edge{ID: "edge", From: "node", To: "node", Type: "kind", RelationKind: "explicit", Confidence: "1", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	_, hash, err := graphsnapshot.CanonicalHash([]graphsnapshot.Node{node}, []graphsnapshot.Edge{edge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := graphsnapshot.NewService(s, func() (string, error) { return "rollback-task", nil })
+	if _, graphErr := service.Put(context.Background(), "project", "rollback", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeFull, ContentHash: hash, Nodes: []graphsnapshot.Node{node}, Edges: []graphsnapshot.Edge{edge}}); graphErr != nil {
+		t.Fatal(graphErr)
+	}
+	if _, err = s.DB().Exec(`CREATE TRIGGER fail_graph_promotion BEFORE INSERT ON graph_edges WHEN NEW.version='rollback' BEGIN SELECT RAISE(ABORT,'injected graph promotion failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PromoteGraphComponent(context.Background(), "rollback-task"); err == nil {
+		t.Fatal("promotion unexpectedly succeeded")
+	}
+	var nodes, edges int
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_nodes WHERE namespace='project' AND version='rollback'`).Scan(&nodes); err != nil || nodes != 0 {
+		t.Fatalf("partial nodes=%d err=%v", nodes, err)
+	}
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_edges WHERE namespace='project' AND version='rollback'`).Scan(&edges); err != nil || edges != 0 {
+		t.Fatalf("partial edges=%d err=%v", edges, err)
+	}
+	var state string
+	if err = s.DB().QueryRow(`SELECT state FROM graph_snapshot_components WHERE namespace='project' AND version='rollback' AND component='graph'`).Scan(&state); err != nil || state != "pending" {
+		t.Fatalf("graph component state=%q err=%v", state, err)
+	}
+}

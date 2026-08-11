@@ -1,0 +1,170 @@
+openapi: 3.0.3
+info:
+  title: Local RAG Graph Snapshot Lifecycle API
+  version: 1.0.0
+  description: Namespace-isolated immutable graph snapshot lifecycle endpoints.
+paths:
+  /v1/graphs/{namespace}/snapshots/{version}:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Version'
+    put:
+      operationId: putGraphSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SnapshotRequest' }
+      responses:
+        '200': { description: Terminal replay, content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } } }
+        '202': { description: Accepted or building replay, content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
+    get:
+      operationId: getGraphSnapshot
+      responses:
+        '200': { description: Snapshot resource, content: { application/json: { schema: { $ref: '#/components/schemas/Snapshot' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
+    delete:
+      operationId: deleteGraphSnapshot
+      responses:
+        '204': { description: Snapshot deleted }
+        default: { $ref: '#/components/responses/GraphError' }
+  /v1/graphs/{namespace}/snapshots/{version}/activate:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Version'
+    post:
+      operationId: activateGraphSnapshot
+      responses:
+        '200':
+          description: Active pointer result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Activation' }
+        default: { $ref: '#/components/responses/GraphError' }
+  /v1/tasks/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    get:
+      operationId: getGraphTask
+      responses:
+        '200': { description: Durable graph task, content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } } }
+        default: { $ref: '#/components/responses/GraphError' }
+components:
+  parameters:
+    Namespace: { name: namespace, in: path, required: true, schema: { type: string, minLength: 1 } }
+    Version: { name: version, in: path, required: true, schema: { type: string, minLength: 1 } }
+    TaskID: { name: task_id, in: path, required: true, schema: { type: string, minLength: 1 } }
+  responses:
+    GraphError:
+      description: Stable versioned lifecycle error
+      headers:
+        X-Request-ID: { schema: { type: string } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/GraphError' }
+  schemas:
+    SnapshotRequest:
+      oneOf:
+        - $ref: '#/components/schemas/FullSnapshotRequest'
+        - $ref: '#/components/schemas/DeltaSnapshotRequest'
+    FullSnapshotRequest:
+      type: object
+      required: [schema_version, mode, content_hash, nodes, edges]
+      properties:
+        schema_version: { type: string, enum: ['1.0'] }
+        mode: { type: string, enum: [full] }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        nodes: { type: array, items: { $ref: '#/components/schemas/Node' } }
+        edges: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+    DeltaSnapshotRequest:
+      type: object
+      required: [schema_version, mode, base_version, content_hash]
+      properties:
+        schema_version: { type: string, enum: ['1.0'] }
+        mode: { type: string, enum: [delta] }
+        base_version: { type: string, minLength: 1 }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        node_upserts: { type: array, items: { $ref: '#/components/schemas/Node' } }
+        node_deletes: { type: array, items: { type: string } }
+        edge_upserts: { type: array, items: { $ref: '#/components/schemas/Edge' } }
+        edge_deletes: { type: array, items: { type: string } }
+    Node:
+      type: object
+      required: [id, type, label, text, properties, provenance]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        label: { type: string }
+        text: { type: string }
+        properties: { type: object, additionalProperties: true }
+        provenance: { type: object, additionalProperties: true }
+    Edge:
+      type: object
+      required: [id, from, to, type, relation_kind, confidence, properties, provenance]
+      properties:
+        id: { type: string }
+        from: { type: string }
+        to: { type: string }
+        type: { type: string }
+        relation_kind: { type: string, enum: [explicit, inferred] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        properties: { type: object, additionalProperties: true }
+        provenance: { type: object, additionalProperties: true }
+    Snapshot:
+      type: object
+      required: [namespace, version, schema_version, content_hash, node_count, edge_count, task_id, status, query_ready, components, warnings]
+      properties:
+        namespace: { type: string }
+        version: { type: string }
+        base_version: { type: [string, 'null'] }
+        schema_version: { type: string, enum: ['1.0'] }
+        content_hash: { $ref: '#/components/schemas/ContentHash' }
+        node_count: { type: integer, minimum: 0 }
+        edge_count: { type: integer, minimum: 0 }
+        task_id: { type: string }
+        status: { type: string, enum: [building, ready, failed] }
+        query_ready: { type: boolean }
+        components: { type: array, items: { $ref: '#/components/schemas/Component' } }
+        warnings: { type: array, items: { type: string } }
+    Component:
+      type: object
+      required: [name, state]
+      properties:
+        name: { type: string, enum: [graph, fts, vector] }
+        state: { type: string, enum: [pending, building, ready, failed, unavailable] }
+        generation: { type: string }
+        error: { $ref: '#/components/schemas/GraphError' }
+    Task:
+      type: object
+      required: [id, namespace, version, state, phase, progress, created_at]
+      properties:
+        id: { type: string }
+        namespace: { type: string }
+        version: { type: string }
+        state: { type: string, enum: [queued, running, succeeded, failed] }
+        phase: { type: string }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        error: { $ref: '#/components/schemas/GraphError' }
+    Activation:
+      type: object
+      required: [namespace, active_version, changed]
+      properties:
+        namespace: { type: string }
+        active_version: { type: string }
+        changed: { type: boolean }
+    ContentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+    GraphError:
+      type: object
+      required: [code, message, retryable, details, request_id]
+      properties:
+        code:
+          type: string
+          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, GRAPH_STORE_UNAVAILABLE, INTERNAL_ERROR]
+        message: { type: string, minLength: 1 }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }
+        request_id: { type: string, minLength: 1 }

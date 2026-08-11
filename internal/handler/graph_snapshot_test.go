@@ -192,13 +192,13 @@ func TestPutGraphSnapshotRejectsStrictJSONAndPayloadLimits(t *testing.T) {
 }
 
 func TestGetGraphSnapshotReturnsCanonicalResourceAndNotFound(t *testing.T) {
-	reader := &graphReaderFake{snapshot: graphsnapshot.Snapshot{Namespace: "project", Version: "revision", ContentHash: "hash", TaskID: "task", Status: graphsnapshot.SnapshotReady, QueryReady: true}, found: true}
+	reader := &graphReaderFake{snapshot: graphsnapshot.Snapshot{Namespace: "project", Version: "revision", ContentHash: "hash", TaskID: "task", Status: graphsnapshot.SnapshotReady, QueryReady: true, Warnings: []string{"vector generation failed"}}, found: true}
 	handler := New(Deps{Config: &config.Config{}, GraphSnapshotReader: reader})
 	router := newGraphSnapshotRouter(handler)
 
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/graphs/project/snapshots/revision", nil))
-	if response.Code != http.StatusOK || reader.namespace != "project" || reader.version != "revision" || !strings.Contains(response.Body.String(), `"query_ready":true`) {
+	if response.Code != http.StatusOK || reader.namespace != "project" || reader.version != "revision" || !strings.Contains(response.Body.String(), `"query_ready":true`) || !strings.Contains(response.Body.String(), `"warnings":["vector generation failed"]`) {
 		t.Fatalf("response = %d %s; reader=%q/%q", response.Code, response.Body.String(), reader.namespace, reader.version)
 	}
 

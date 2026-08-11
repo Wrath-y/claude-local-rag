@@ -23,6 +23,11 @@ type GraphSnapshotService interface {
 	Put(context.Context, string, string, graphsnapshot.Request) (graphsnapshot.SubmissionCheck, *graphsnapshot.Error)
 }
 
+// GraphTaskReader is the read-side dependency for durable task inspection.
+type GraphTaskReader interface {
+	LookupGraphTask(context.Context, string) (graphsnapshot.Task, bool, error)
+}
+
 // PutGraphSnapshot accepts an immutable graph snapshot. The durable task is
 // keyed by the canonical final content hash, so Idempotency-Key is deliberately
 // neither read nor interpreted here.
@@ -85,6 +90,26 @@ func (h *Handler) GetGraphSnapshot(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, snapshot)
+}
+
+// GetGraphTask exposes the durable lifecycle task independently of the
+// process-local worker. The same task ID therefore remains useful after a
+// restart or when a task is terminal.
+func (h *Handler) GetGraphTask(c *gin.Context) {
+	if h.graphTaskReader == nil {
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeGraphStoreUnavailable, nil, nil))
+		return
+	}
+	task, found, err := h.graphTaskReader.LookupGraphTask(c.Request.Context(), c.Param("task_id"))
+	if err != nil {
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeGraphStoreUnavailable, nil, err))
+		return
+	}
+	if !found {
+		writeGraphError(c, graphsnapshot.NewError(graphsnapshot.CodeTaskNotFound, map[string]any{"task_id": c.Param("task_id")}, nil))
+		return
+	}
+	c.JSON(http.StatusOK, task)
 }
 
 func graphSnapshotIdentity(c *gin.Context) (string, string, bool) {

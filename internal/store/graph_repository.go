@@ -16,6 +16,7 @@ var (
 	// ErrGraphSnapshotNotFound is intentionally storage-level. The /v1
 	// lifecycle service maps it to its stable SNAPSHOT_NOT_FOUND response.
 	ErrGraphSnapshotNotFound = errors.New("graph snapshot not found")
+	ErrGraphTaskNotFound     = errors.New("graph task not found")
 	ErrInvalidGraphIdentity  = errors.New("graph namespace and version are required")
 )
 
@@ -36,6 +37,58 @@ type GraphSnapshotRecord struct {
 	QueryReady    bool
 	Nodes         []graphsnapshot.Node
 	Edges         []graphsnapshot.Edge
+}
+
+// LookupGraphTask returns the durable task resource without inferring state
+// from process-local worker data. A task ID remains readable across restarts.
+func (s *Store) LookupGraphTask(ctx context.Context, id string) (graphsnapshot.Task, bool, error) {
+	if id == "" {
+		return graphsnapshot.Task{}, false, nil
+	}
+	if err := s.GraphUnavailable(); err != nil {
+		return graphsnapshot.Task{}, false, err
+	}
+	var task graphsnapshot.Task
+	var createdAt string
+	var startedAt, finishedAt, errorJSON sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,version,state,phase,progress,created_at,started_at,finished_at,error_json FROM graph_tasks WHERE id=?`, id).Scan(
+		&task.ID, &task.Namespace, &task.Version, &task.State, &task.Phase, &task.Progress, &createdAt, &startedAt, &finishedAt, &errorJSON,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return graphsnapshot.Task{}, false, nil
+	}
+	if err != nil {
+		return graphsnapshot.Task{}, false, fmt.Errorf("lookup graph task: %w", err)
+	}
+	var parseErr error
+	if task.CreatedAt, parseErr = time.Parse(time.RFC3339Nano, createdAt); parseErr != nil {
+		return graphsnapshot.Task{}, false, fmt.Errorf("parse graph task created_at: %w", parseErr)
+	}
+	if task.StartedAt, parseErr = graphTaskTime(startedAt); parseErr != nil {
+		return graphsnapshot.Task{}, false, parseErr
+	}
+	if task.FinishedAt, parseErr = graphTaskTime(finishedAt); parseErr != nil {
+		return graphsnapshot.Task{}, false, parseErr
+	}
+	if errorJSON.Valid {
+		var graphErr graphsnapshot.Error
+		if err := json.Unmarshal([]byte(errorJSON.String), &graphErr); err != nil {
+			return graphsnapshot.Task{}, false, fmt.Errorf("decode graph task error: %w", err)
+		}
+		task.Error = &graphErr
+	}
+	return task, true, nil
+}
+
+func graphTaskTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value.String)
+	if err != nil {
+		return nil, fmt.Errorf("parse graph task timestamp: %w", err)
+	}
+	return &parsed, nil
 }
 
 // LookupGraphSnapshot builds the public lifecycle resource for an already

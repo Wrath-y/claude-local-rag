@@ -34,6 +34,18 @@ type graphReaderFake struct {
 	version   string
 }
 
+type graphTaskReaderFake struct {
+	task  graphsnapshot.Task
+	found bool
+	err   error
+	id    string
+}
+
+func (f *graphTaskReaderFake) LookupGraphTask(_ context.Context, id string) (graphsnapshot.Task, bool, error) {
+	f.id = id
+	return f.task, f.found, f.err
+}
+
 func (f *graphReaderFake) LookupGraphSnapshot(_ context.Context, namespace, version string) (graphsnapshot.Snapshot, bool, error) {
 	f.namespace, f.version = namespace, version
 	return f.snapshot, f.found, f.err
@@ -44,7 +56,30 @@ func newGraphSnapshotRouter(h *Handler) *gin.Engine {
 	router.Use(GraphRequestID())
 	router.PUT("/v1/graphs/:namespace/snapshots/:version", h.PutGraphSnapshot)
 	router.GET("/v1/graphs/:namespace/snapshots/:version", h.GetGraphSnapshot)
+	router.GET("/v1/tasks/:task_id", h.GetGraphTask)
 	return router
+}
+
+func TestGetGraphTaskReturnsEveryDurableStateAndNotFound(t *testing.T) {
+	for _, state := range []graphsnapshot.TaskState{graphsnapshot.TaskQueued, graphsnapshot.TaskRunning, graphsnapshot.TaskSucceeded, graphsnapshot.TaskFailed} {
+		t.Run(string(state), func(t *testing.T) {
+			reader := &graphTaskReaderFake{task: graphsnapshot.Task{ID: "task", Namespace: "project", Version: "revision", State: state, Phase: "fts", Progress: 50}, found: true}
+			handler := New(Deps{Config: &config.Config{}, GraphTaskReader: reader})
+			response := httptest.NewRecorder()
+			newGraphSnapshotRouter(handler).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/task", nil))
+			if response.Code != http.StatusOK || reader.id != "task" || !strings.Contains(response.Body.String(), `"state":"`+string(state)+`"`) {
+				t.Fatalf("response = %d %s; task=%q", response.Code, response.Body.String(), reader.id)
+			}
+		})
+	}
+
+	reader := &graphTaskReaderFake{}
+	handler := New(Deps{Config: &config.Config{}, GraphTaskReader: reader})
+	response := httptest.NewRecorder()
+	newGraphSnapshotRouter(handler).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/missing", nil))
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"TASK_NOT_FOUND"`) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
 }
 
 func graphSnapshotRequest() string {

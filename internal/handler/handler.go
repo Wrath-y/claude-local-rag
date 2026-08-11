@@ -31,6 +31,7 @@ type Deps struct {
 	// graph lifecycle endpoints. Legacy handlers remain independent of them.
 	GraphService        GraphSnapshotService
 	GraphSnapshotReader graphsnapshot.ExistingSnapshotReader
+	GraphTaskReader     GraphTaskReader
 	// LoaderRegistry and FeishuResolver make input resolution explicit and
 	// replaceable in tests. A nil resolver safely rejects Feishu URLs.
 	LoaderRegistry *document.Registry
@@ -49,6 +50,7 @@ type Handler struct {
 	syncService      *sourcesync.Service
 	graphService     GraphSnapshotService
 	graphReader      graphsnapshot.ExistingSnapshotReader
+	graphTaskReader  GraphTaskReader
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -88,6 +90,7 @@ func New(deps Deps) *Handler {
 		management:           deps.Management,
 		graphService:         deps.GraphService,
 		graphReader:          deps.GraphSnapshotReader,
+		graphTaskReader:      deps.GraphTaskReader,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
 	}

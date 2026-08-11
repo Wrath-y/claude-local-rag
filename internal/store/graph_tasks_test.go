@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
 
 func TestClaimOldestQueuedGraphTaskAndAdvanceProgressMonotonically(t *testing.T) {
@@ -32,5 +35,27 @@ func TestClaimOldestQueuedGraphTaskAndAdvanceProgressMonotonically(t *testing.T)
 	}
 	if _, found, err := s.ClaimOldestQueuedGraphTask(context.Background()); err != nil || found {
 		t.Fatalf("empty found=%v err=%v", found, err)
+	}
+}
+
+func TestLookupGraphTaskReturnsDurableTerminalResource(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedGraphSnapshot(t, s, "tasks", "terminal", "terminal")
+	if _, err := s.DB().Exec(`INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,error_json,created_at,started_at,finished_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, "task-tasks-terminal", "tasks", "terminal", "failed", "fts", 60, `{"code":"INTERNAL_ERROR","message":"Graph lifecycle operation failed","retryable":false,"details":{}}`, "2026-08-10T00:00:00Z", "2026-08-10T00:00:01Z", "2026-08-10T00:00:02Z"); err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := s.LookupGraphTask(context.Background(), "task-tasks-terminal")
+	if err != nil || !found || task.State != graphsnapshot.TaskFailed || task.Error == nil || task.Error.Code != graphsnapshot.CodeInternalError || task.StartedAt == nil || task.FinishedAt == nil {
+		t.Fatalf("task=%#v found=%v err=%v", task, found, err)
+	}
+	if _, found, err := s.LookupGraphTask(context.Background(), "missing"); err != nil || found {
+		t.Fatalf("missing found=%v err=%v", found, err)
+	}
+	if strings.Contains(task.Error.Message, "secret") {
+		t.Fatal("unexpected unsafe task error message")
 	}
 }

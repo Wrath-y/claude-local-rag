@@ -47,7 +47,7 @@ func (s *Store) ReconcileGraphSnapshot(ctx context.Context, namespace, version s
 	if _, err = s.db.ExecContext(ctx, `UPDATE graph_snapshots SET status=?,query_ready=?,updated_at=? WHERE namespace=? AND version=?`, status, ready, time.Now().UTC().Format(time.RFC3339Nano), namespace, version); err != nil {
 		return err
 	}
-	if status == "ready" {
+	if status == "ready" && (states["vector"] == "ready" || states["vector"] == "failed" || states["vector"] == "unavailable") {
 		_, err = s.db.ExecContext(ctx, `UPDATE graph_tasks SET state='succeeded',phase='completed',progress=100,finished_at=? WHERE namespace=? AND version=? AND state='running'`, time.Now().UTC().Format(time.RFC3339Nano), namespace, version)
 		return err
 	}

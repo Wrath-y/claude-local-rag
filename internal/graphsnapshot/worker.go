@@ -18,6 +18,21 @@ type GraphTaskRecovery interface {
 
 type TaskDispatcher func(context.Context, Task) error
 
+// GraphTaskProcessor is the repository boundary used by Dispatch. Provider
+// calls are made by BuildGraphVectors and therefore remain outside SQLite
+// transactions; every failure is converted to a durable component outcome.
+type GraphTaskProcessor interface {
+	LookupGraphSnapshot(context.Context, string, string) (Snapshot, bool, error)
+	AdvanceGraphTaskProgress(context.Context, string, string, int) (bool, error)
+	PromoteGraphComponent(context.Context, string) error
+	PopulateGraphSearchDocuments(context.Context, string) error
+	BuildGraphVectors(context.Context, string, Embedder) error
+	MarkGraphVectorUnavailable(context.Context, string, string) error
+	MarkGraphVectorFailed(context.Context, string, *Error, string) error
+	FailRequiredGraphComponent(context.Context, string, ComponentName, *Error) error
+	ReconcileGraphSnapshot(context.Context, string, string) error
+}
+
 // Start launches one graph-task worker. Calling it repeatedly is idempotent;
 // Wake coalesces submissions and Close cancels the dispatcher then waits for
 // the worker to leave its current dispatch boundary.
@@ -66,6 +81,58 @@ func (s *Service) Wake() {
 	case s.wake <- struct{}{}:
 	default:
 	}
+}
+
+// Dispatch runs one durable task from the next incomplete component boundary.
+// A required failure is terminal; a vector failure is a successful degraded
+// completion once graph and FTS are ready.
+func (s *Service) Dispatch(ctx context.Context, task Task, embedder Embedder) error {
+	processor, ok := s.repository.(GraphTaskProcessor)
+	if !ok {
+		return fmt.Errorf("graph snapshot repository cannot process tasks")
+	}
+	snapshot, found, err := processor.LookupGraphSnapshot(ctx, task.Namespace, task.Version)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("graph task snapshot is missing")
+	}
+	states := make(map[ComponentName]ComponentState, len(snapshot.Components))
+	for _, component := range snapshot.Components {
+		states[component.Name] = component.State
+	}
+	if states[ComponentGraph] != ComponentReady {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "graph", 10); err != nil {
+			return err
+		}
+		if err = processor.PromoteGraphComponent(ctx, task.ID); err != nil {
+			return processor.FailRequiredGraphComponent(ctx, task.ID, ComponentGraph, NewError(CodeInternalError, nil, err))
+		}
+	}
+	if states[ComponentFTS] != ComponentReady {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "fts", 50); err != nil {
+			return err
+		}
+		if err = processor.PopulateGraphSearchDocuments(ctx, task.ID); err != nil {
+			return processor.FailRequiredGraphComponent(ctx, task.ID, ComponentFTS, NewError(CodeInternalError, nil, err))
+		}
+	}
+	if states[ComponentVector] != ComponentReady && states[ComponentVector] != ComponentFailed && states[ComponentVector] != ComponentUnavailable {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "vector", 75); err != nil {
+			return err
+		}
+		if embedder == nil {
+			if err = processor.MarkGraphVectorUnavailable(ctx, task.ID, "graph vector provider is unavailable"); err != nil {
+				return err
+			}
+		} else if err = processor.BuildGraphVectors(ctx, task.ID, embedder); err != nil {
+			if err = processor.MarkGraphVectorFailed(ctx, task.ID, NewError(CodeInternalError, nil, err), "graph vector generation failed"); err != nil {
+				return err
+			}
+		}
+	}
+	return processor.ReconcileGraphSnapshot(ctx, task.Namespace, task.Version)
 }
 
 func (s *Service) Close() {

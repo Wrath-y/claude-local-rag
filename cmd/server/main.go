@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wrath-y/local-rag/internal/chunk"
 	"github.com/Wrath-y/local-rag/internal/config"
+	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/handler"
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/mcpserver"
@@ -27,7 +28,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Request-ID")
 
 		if c.Request.Method == http.MethodOptions {
 			c.Status(http.StatusNoContent)
@@ -102,24 +103,51 @@ func main() {
 	}
 	stores := handler.NewStoreLifecycle(st)
 	defer stores.Close()
+	graphService := graphsnapshot.NewService(st, nil)
+	graphAvailable := true
+	if graphErr := st.GraphUnavailable(); graphErr != nil {
+		graphAvailable = false
+		slog.Error("graph lifecycle unavailable after initialization", "err", graphErr)
+	} else if err := graphService.Start(context.Background(), func(ctx context.Context, task graphsnapshot.Task) error {
+		return graphService.Dispatch(ctx, task, embedder)
+	}); err != nil {
+		graphAvailable = false
+		slog.Error("graph lifecycle worker start failed", "err", err)
+	}
+	defer graphService.Close()
 
 	// Init chunker.
 	chunker := chunk.NewChunker(cfg.Chunk, embedder, llm)
 
-	// Build handler.
-	h := handler.New(handler.Deps{
+	// Build handler. Graph dependencies are supplied only after recovery starts;
+	// a graph migration/startup failure leaves every legacy route operational.
+	handlerDeps := handler.Deps{
 		Config:   cfg,
 		Stores:   stores,
 		Embedder: embedder,
 		Reranker: reranker,
 		LLM:      llm,
 		Chunker:  chunker,
-	})
+	}
+	if graphAvailable {
+		handlerDeps.GraphService = graphService
+		handlerDeps.GraphSnapshotReader = st
+		handlerDeps.GraphTaskReader = st
+		handlerDeps.GraphLifecycle = st
+	}
+	h := handler.New(handlerDeps)
 
 	// Gin router.
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), corsMiddleware())
+	v1 := r.Group("/v1")
+	v1.Use(handler.GraphRequestID())
+	v1.PUT("/graphs/:namespace/snapshots/:version", h.PutGraphSnapshot)
+	v1.GET("/graphs/:namespace/snapshots/:version", h.GetGraphSnapshot)
+	v1.POST("/graphs/:namespace/snapshots/:version/activate", h.ActivateGraphSnapshot)
+	v1.DELETE("/graphs/:namespace/snapshots/:version", h.DeleteGraphSnapshot)
+	v1.GET("/tasks/:task_id", h.GetGraphTask)
 
 	// Core routes.
 	r.POST("/ingest", h.Ingest)
@@ -186,6 +214,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		slog.Info("shutting down")
+		graphService.Close()
 		sc.Stop()
 		stores.Close()
 		os.Exit(0)

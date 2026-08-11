@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
@@ -35,6 +36,53 @@ func TestClaimOldestQueuedGraphTaskAndAdvanceProgressMonotonically(t *testing.T)
 	}
 	if _, found, err := s.ClaimOldestQueuedGraphTask(context.Background()); err != nil || found {
 		t.Fatalf("empty found=%v err=%v", found, err)
+	}
+}
+
+func TestClaimOldestQueuedGraphTaskClaimsEachTaskOnceUnderContention(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, version := range []string{"one", "two"} {
+		seedGraphSnapshot(t, s, "claim", version, version)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,created_at) VALUES('task-claim-one','claim','one','queued','queued',0,'2026-08-10T00:00:00Z'),('task-claim-two','claim','two','queued','queued',0,'2026-08-10T00:00:01Z')`); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan string, 2)
+	errors := make(chan error, 2)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			task, found, claimErr := s.ClaimOldestQueuedGraphTask(context.Background())
+			if claimErr != nil {
+				errors <- claimErr
+				return
+			}
+			if found {
+				results <- task.ID
+			}
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for claimErr := range errors {
+		t.Fatal(claimErr)
+	}
+	seen := map[string]bool{}
+	for id := range results {
+		if seen[id] {
+			t.Fatalf("task %q was claimed twice", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != 2 || !seen["task-claim-one"] || !seen["task-claim-two"] {
+		t.Fatalf("claimed tasks = %#v", seen)
 	}
 }
 

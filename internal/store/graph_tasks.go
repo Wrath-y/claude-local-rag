@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -18,21 +19,21 @@ func (s *Store) ClaimOldestQueuedGraphTask(ctx context.Context) (graphsnapshot.T
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `UPDATE graph_tasks SET state='running',phase='running',started_at=? WHERE id=(SELECT id FROM graph_tasks WHERE state='queued' ORDER BY created_at,id LIMIT 1) AND state='queued'`, now)
+	var task graphsnapshot.Task
+	var created, started string
+	err = tx.QueryRowContext(ctx, `UPDATE graph_tasks
+SET state='running',phase='running',started_at=?
+WHERE id=(SELECT id FROM graph_tasks WHERE state='queued' ORDER BY created_at,id LIMIT 1)
+  AND state='queued'
+RETURNING id,namespace,version,state,phase,progress,created_at,started_at`, now).Scan(&task.ID, &task.Namespace, &task.Version, &task.State, &task.Phase, &task.Progress, &created, &started)
+	if err == sql.ErrNoRows {
+		return graphsnapshot.Task{}, false, tx.Commit()
+	}
 	if err != nil {
 		return graphsnapshot.Task{}, false, fmt.Errorf("claim graph task: %w", err)
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return graphsnapshot.Task{}, false, err
-	}
-	if changed == 0 {
-		return graphsnapshot.Task{}, false, tx.Commit()
-	}
-	var task graphsnapshot.Task
-	var created, started string
-	if err := tx.QueryRowContext(ctx, `SELECT id,namespace,version,state,phase,progress,created_at,started_at FROM graph_tasks WHERE state='running' AND started_at=? ORDER BY id LIMIT 1`, now).Scan(&task.ID, &task.Namespace, &task.Version, &task.State, &task.Phase, &task.Progress, &created, &started); err != nil {
-		return graphsnapshot.Task{}, false, err
+	if created == "" || started == "" {
+		return graphsnapshot.Task{}, false, fmt.Errorf("claim graph task returned incomplete timestamps")
 	}
 	if task.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return graphsnapshot.Task{}, false, err

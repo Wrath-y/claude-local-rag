@@ -115,6 +115,7 @@ func (s *Service) Put(ctx context.Context, namespace, version string, request Re
 		}
 		return SubmissionCheck{}, NewError(CodeGraphStoreUnavailable, nil, err)
 	}
+	s.Wake()
 	return SubmissionCheck{Snapshot: snapshot}, nil
 }
 

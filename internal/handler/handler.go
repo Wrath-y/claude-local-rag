@@ -7,6 +7,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/citation"
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/document"
+	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/observe"
 	"github.com/Wrath-y/local-rag/internal/provider"
@@ -26,6 +27,10 @@ type Deps struct {
 	Chunker    chunk.Chunker
 	Management *management.Service
 	Sync       *sourcesync.Service
+	// GraphService and GraphSnapshotReader are used only by the additive /v1
+	// graph lifecycle endpoints. Legacy handlers remain independent of them.
+	GraphService        GraphSnapshotService
+	GraphSnapshotReader graphsnapshot.ExistingSnapshotReader
 	// LoaderRegistry and FeishuResolver make input resolution explicit and
 	// replaceable in tests. A nil resolver safely rejects Feishu URLs.
 	LoaderRegistry *document.Registry
@@ -42,6 +47,8 @@ type Handler struct {
 	agent            agentState
 	ingestService    document.Service
 	syncService      *sourcesync.Service
+	graphService     GraphSnapshotService
+	graphReader      graphsnapshot.ExistingSnapshotReader
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -79,6 +86,8 @@ func New(deps Deps) *Handler {
 	h := &Handler{
 		deps:                 deps,
 		management:           deps.Management,
+		graphService:         deps.GraphService,
+		graphReader:          deps.GraphSnapshotReader,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
 	}

@@ -469,6 +469,59 @@ func (e *countingGraphEmbedder) Embed(_ context.Context, texts []string) ([][]fl
 	return graphEmbedderFake{}.Embed(context.Background(), texts)
 }
 
+type blockingGraphEmbedder struct{ started chan struct{} }
+
+func (e blockingGraphEmbedder) Embed(ctx context.Context, _ []string) ([][]float32, error) {
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestGraphWorkerCloseDuringVectorRebuildReopensSafely(t *testing.T) {
+	path := t.TempDir() + "/rag.db"
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTrustedRebuildSnapshot(t, s, "worker-close", "v1")
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id='initial-task'`); err != nil {
+		t.Fatal(err)
+	}
+	components := []operability.Component{operability.ComponentVector}
+	if _, _, err = s.AdmitGraphRebuild(context.Background(), "worker-close", "v1", "worker-close", operability.RequestFingerprint(components), "request", "worker-close-task", components); err != nil {
+		t.Fatal(err)
+	}
+	worker := graphsnapshot.NewService(s, nil)
+	embedder := blockingGraphEmbedder{started: make(chan struct{}, 1)}
+	if err = worker.Start(context.Background(), func(ctx context.Context, task graphsnapshot.Task) error {
+		return worker.Dispatch(ctx, task, embedder)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-embedder.started
+	worker.Close()
+	if current, found, err := s.LookupGraphTask(context.Background(), "worker-close-task"); err != nil || !found || current.State != graphsnapshot.TaskRunning {
+		t.Fatalf("closed task=%+v found=%v err=%v", current, found, err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err = s.RecoverGraphTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if current, found, err := s.LookupGraphTask(context.Background(), "worker-close-task"); err != nil || !found || current.State != graphsnapshot.TaskQueued {
+		t.Fatalf("reopened task=%+v found=%v err=%v", current, found, err)
+	}
+}
+
 // TestGraphRebuildFailureBoundaries exercises every durable component and
 // validation boundary. A failed boundary may leave private staging data for
 // crash recovery, but it can never replace a selected generation. Replaying

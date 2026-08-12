@@ -87,6 +87,7 @@ func (s *Store) AdmitGraphRebuild(ctx context.Context, namespace, version, idemp
 	}
 	observe.GraphTaskTransitions.WithLabelValues("snapshot_rebuild", string(graphsnapshot.TaskQueued)).Inc()
 	s.observeGraphTaskQueue(ctx)
+	observe.GraphEvent("task_accepted", "snapshot_rebuild", "", taskID, submissionRequestID, "")
 	return graphsnapshot.Task{ID: taskID, Namespace: namespace, Version: version, State: graphsnapshot.TaskQueued, Phase: "queued"}, false, nil
 }
 
@@ -420,6 +421,7 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 		if err := s.graphRebuildBoundary("after_build_" + string(component)); err != nil {
 			return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 		}
+		observe.GraphEvent("rebuild_component_complete", "snapshot_rebuild", string(component), task.ID, task.SubmissionRequestID, "")
 		observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "succeeded").Inc()
 		observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "succeeded").Observe(time.Since(started).Seconds())
 	}
@@ -545,6 +547,7 @@ func (s *Store) promoteGraphIndexRebuild(ctx context.Context, taskID string) err
 	}
 	observe.GraphTaskTransitions.WithLabelValues("snapshot_rebuild", string(graphsnapshot.TaskSucceeded)).Inc()
 	s.observeGraphTaskTerminal(ctx, taskID, graphsnapshot.TaskSucceeded)
+	observe.GraphEvent("task_terminal", "snapshot_rebuild", "", taskID, "", "SUCCEEDED")
 	return nil
 }
 
@@ -562,6 +565,7 @@ func (s *Store) failGraphRebuild(ctx context.Context, taskID string, graphErr *g
 	if err == nil {
 		observe.GraphTaskTransitions.WithLabelValues("snapshot_rebuild", string(graphsnapshot.TaskFailed)).Inc()
 		s.observeGraphTaskTerminal(ctx, taskID, graphsnapshot.TaskFailed)
+		observe.GraphEvent("task_terminal", "snapshot_rebuild", "", taskID, requestID.String, string(graphErr.Code))
 	}
 	return err
 }

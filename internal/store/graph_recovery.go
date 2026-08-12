@@ -39,5 +39,6 @@ func (s *Store) RecoverGraphTasks(ctx context.Context) error {
 		return err
 	}
 	observe.GraphRecoveryTotal.Inc()
+	observe.GraphEvent("task_recovery", "", "", "", "", "")
 	return nil
 }

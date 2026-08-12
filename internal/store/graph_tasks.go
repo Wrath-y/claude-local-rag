@@ -53,6 +53,7 @@ WHERE id=(SELECT id FROM graph_tasks WHERE state='queued' ORDER BY created_at,id
 	}
 	observe.GraphTaskTransitions.WithLabelValues(task.Operation, string(graphsnapshot.TaskRunning)).Inc()
 	s.observeGraphTaskQueue(ctx)
+	observe.GraphEvent("task_claimed", task.Operation, "", task.ID, "", "")
 	return task, true, nil
 }
 

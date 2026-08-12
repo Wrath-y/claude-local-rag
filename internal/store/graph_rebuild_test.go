@@ -359,6 +359,33 @@ func TestPromotionRejectsCorruptValidatedPrivateGeneration(t *testing.T) {
 	}
 }
 
+func TestFailedRebuildTaskRetainsSubmissionRequestIDInError(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedTrustedRebuildSnapshot(t, s, "request-correlation", "v1")
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id='initial-task'`); err != nil {
+		t.Fatal(err)
+	}
+	components := []operability.Component{operability.ComponentVector}
+	if _, _, err = s.AdmitGraphRebuild(context.Background(), "request-correlation", "v1", "request-correlation", operability.RequestFingerprint(components), "submit-request-42", "failed-rebuild", components); err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+	if err != nil || !found {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+	if err = s.ProcessGraphRebuild(context.Background(), task, failingGraphEmbedder{}); err != nil {
+		t.Fatal(err)
+	}
+	stored, found, err := s.LookupGraphTask(context.Background(), task.ID)
+	if err != nil || !found || stored.State != graphsnapshot.TaskFailed || stored.Error == nil || stored.Error.RequestID != "submit-request-42" || stored.SubmissionRequestID != "submit-request-42" {
+		t.Fatalf("stored=%+v found=%v err=%v", stored, found, err)
+	}
+}
+
 func TestProcessGraphIndexRebuildPromotesAtomically(t *testing.T) {
 	s, err := New(t.TempDir()+"/rag.db", 4)
 	if err != nil {

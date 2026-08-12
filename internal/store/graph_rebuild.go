@@ -529,6 +529,10 @@ func (s *Store) promoteGraphIndexRebuild(ctx context.Context, taskID string) err
 }
 
 func (s *Store) failGraphRebuild(ctx context.Context, taskID string, graphErr *graphsnapshot.Error) error {
+	var requestID sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT submission_request_id FROM graph_tasks WHERE id=?`, taskID).Scan(&requestID); err == nil && requestID.Valid {
+		graphErr.WithRequestID(requestID.String)
+	}
 	payload, err := json.Marshal(graphErr)
 	if err != nil {
 		return err

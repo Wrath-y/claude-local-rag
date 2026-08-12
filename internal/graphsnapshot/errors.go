@@ -77,6 +77,7 @@ type Error struct {
 	Message   string         `json:"message"`
 	Retryable bool           `json:"retryable"`
 	Details   map[string]any `json:"details"`
+	RequestID string         `json:"request_id,omitempty"`
 	Cause     error          `json:"-"`
 }
 
@@ -110,6 +111,13 @@ func (e *Error) WithDetail(key string, value any) *Error {
 // depends on the observed stage outcomes rather than the code alone.
 func (e *Error) WithRetryability(retryable bool) *Error {
 	e.Retryable = retryable
+	return e
+}
+
+// WithRequestID records the safe causal request identifier on a durable
+// background error. The HTTP adapter has its own request ID for poll errors.
+func (e *Error) WithRequestID(requestID string) *Error {
+	e.RequestID = requestID
 	return e
 }
 

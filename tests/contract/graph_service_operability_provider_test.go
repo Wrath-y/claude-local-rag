@@ -16,6 +16,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/handler"
 	"github.com/Wrath-y/local-rag/internal/operability"
+	"github.com/Wrath-y/local-rag/internal/provider"
 	"github.com/Wrath-y/local-rag/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -43,7 +44,7 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := handler.New(handler.Deps{Config: &config.Config{}, Store: s, GraphService: service, GraphSnapshotReader: s, GraphTaskReader: s, GraphLifecycle: s, GraphRebuild: operability.RebuildService{Repository: s, NewTaskID: func() string { return "task-rebuild-1" }}})
+	h := handler.New(handler.Deps{Config: &config.Config{}, Store: s, Embedder: contractEmbedder{}, Reranker: contractReranker{}, GraphService: service, GraphSnapshotReader: s, GraphTaskReader: s, GraphLifecycle: s, GraphRebuild: operability.RebuildService{Repository: s, NewTaskID: func() string { return "task-rebuild-1" }}})
 	router := gin.New()
 	router.Use(handler.GraphRequestID())
 	router.GET("/health", h.Health)
@@ -130,6 +131,30 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 		t.Fatalf("reimport=%d %s", reimport.Code, reimport.Body.String())
 	}
 	validateOpenAPIResponse(t, "GraphError", reimport.Body.Bytes())
+}
+
+type contractEmbedder struct{}
+
+func (contractEmbedder) Dims() int { return 4 }
+func (contractEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range result {
+		result[i] = []float32{1, 0, 0, 0}
+	}
+	return result, nil
+}
+
+type contractReranker struct{}
+
+func (contractReranker) Rerank(_ context.Context, _ string, documents []string, topN int) ([]provider.RerankResult, error) {
+	if topN > len(documents) {
+		topN = len(documents)
+	}
+	result := make([]provider.RerankResult, topN)
+	for i := range result {
+		result[i] = provider.RerankResult{Index: i, RelevanceScore: float64(topN - i)}
+	}
+	return result, nil
 }
 
 // validateOpenAPIResponse keeps contract replay tied to the published schema.

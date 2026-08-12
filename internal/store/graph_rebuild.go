@@ -383,6 +383,9 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 	for index, component := range components {
 		progress := 3000 + (5000*(index+1))/len(components)
 		started := time.Now()
+		if err := s.graphRebuildBoundary("before_build_" + string(component)); err != nil {
+			return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+		}
 		switch component {
 		case operability.ComponentGraphIndexes:
 			if _, err := s.AdvanceGraphTaskProgress(ctx, task.ID, "building_graph_indexes", progress); err != nil {
@@ -414,10 +417,27 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 		default:
 			return s.failGraphRebuild(ctx, task.ID, graphsnapshot.NewError(graphsnapshot.CodeInternalError, map[string]any{"reason": "COMPONENT_NOT_IMPLEMENTED"}, nil))
 		}
+		if err := s.graphRebuildBoundary("after_build_" + string(component)); err != nil {
+			return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+		}
 		observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "succeeded").Inc()
 		observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "succeeded").Observe(time.Since(started).Seconds())
 	}
-	return s.promoteGraphIndexRebuild(ctx, task.ID)
+	if err := s.graphRebuildBoundary("before_promotion"); err != nil {
+		return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+	}
+	err := s.promoteGraphIndexRebuild(ctx, task.ID)
+	if err == nil {
+		err = s.graphRebuildBoundary("after_promotion")
+	}
+	return err
+}
+
+func (s *Store) graphRebuildBoundary(name string) error {
+	if s.graphRebuildFailpoint == nil {
+		return nil
+	}
+	return s.graphRebuildFailpoint(name)
 }
 
 func (s *Store) promoteGraphIndexRebuild(ctx context.Context, taskID string) error {

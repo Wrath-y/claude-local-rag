@@ -386,6 +386,47 @@ func TestFailedRebuildTaskRetainsSubmissionRequestIDInError(t *testing.T) {
 	}
 }
 
+func TestInjectedPrePromotionFailurePreservesSelectedGeneration(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedTrustedRebuildSnapshot(t, s, "injected", "v1")
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id='initial-task'`); err != nil {
+		t.Fatal(err)
+	}
+	var oldGeneration string
+	if err = s.DB().QueryRow(`SELECT generation FROM graph_retrieval_generations WHERE namespace='injected' AND version='v1' AND component='graph_indexes' AND selected=1`).Scan(&oldGeneration); err != nil {
+		t.Fatal(err)
+	}
+	components := []operability.Component{operability.ComponentGraphIndexes}
+	if _, _, err = s.AdmitGraphRebuild(context.Background(), "injected", "v1", "inject", operability.RequestFingerprint(components), "request", "injected-task", components); err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+	if err != nil || !found {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+	s.graphRebuildFailpoint = func(boundary string) error {
+		if boundary == "before_promotion" {
+			return errors.New("injected")
+		}
+		return nil
+	}
+	if err = s.ProcessGraphRebuild(context.Background(), task, graphEmbedderFake{}); err != nil {
+		t.Fatal(err)
+	}
+	var selected string
+	if err = s.DB().QueryRow(`SELECT generation FROM graph_retrieval_generations WHERE namespace='injected' AND version='v1' AND component='graph_indexes' AND selected=1`).Scan(&selected); err != nil || selected != oldGeneration {
+		t.Fatalf("selected=%q old=%q err=%v", selected, oldGeneration, err)
+	}
+	stored, found, err := s.LookupGraphTask(context.Background(), task.ID)
+	if err != nil || !found || stored.State != graphsnapshot.TaskFailed {
+		t.Fatalf("task=%+v found=%v err=%v", stored, found, err)
+	}
+}
+
 func TestProcessGraphIndexRebuildPromotesAtomically(t *testing.T) {
 	s, err := New(t.TempDir()+"/rag.db", 4)
 	if err != nil {

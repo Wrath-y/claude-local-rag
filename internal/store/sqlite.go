@@ -21,6 +21,9 @@ type Store struct {
 	dims             int
 	feedbackKey      []byte
 	graphUnavailable error
+	// graphRebuildFailpoint is intentionally unexported and used only by
+	// package tests to prove atomic failure boundaries.
+	graphRebuildFailpoint func(string) error
 }
 
 // New opens (or creates) a SQLite database at dbPath, applies pragmas, and

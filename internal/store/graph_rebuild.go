@@ -403,7 +403,7 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 		progress := 3000 + (5000*(index+1))/len(components)
 		started := time.Now()
 		if err := s.graphRebuildBoundary("before_build_" + string(component)); err != nil {
-			return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+			return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 		}
 		switch component {
 		case operability.ComponentGraphIndexes:
@@ -413,7 +413,7 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 			if _, err := s.BuildPrivateGraphIndexes(ctx, task.ID); err != nil {
 				observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "failed").Inc()
 				observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "failed").Observe(time.Since(started).Seconds())
-				return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+				return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 			}
 		case operability.ComponentFTS:
 			if _, err := s.AdvanceGraphTaskProgress(ctx, task.ID, "building_fts", progress); err != nil {
@@ -422,7 +422,7 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 			if _, err := s.BuildPrivateGraphFTS(ctx, task.ID); err != nil {
 				observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "failed").Inc()
 				observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "failed").Observe(time.Since(started).Seconds())
-				return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+				return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 			}
 		case operability.ComponentVector:
 			if _, err := s.AdvanceGraphTaskProgress(ctx, task.ID, "building_vector", progress); err != nil {
@@ -431,20 +431,20 @@ func (s *Store) ProcessGraphRebuild(ctx context.Context, task graphsnapshot.Task
 			if _, err := s.BuildPrivateGraphVectors(ctx, task.ID, embedder); err != nil {
 				observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "failed").Inc()
 				observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "failed").Observe(time.Since(started).Seconds())
-				return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+				return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 			}
 		default:
 			return s.failGraphRebuild(ctx, task.ID, graphsnapshot.NewError(graphsnapshot.CodeInternalError, map[string]any{"reason": "COMPONENT_NOT_IMPLEMENTED"}, nil))
 		}
 		if err := s.graphRebuildBoundary("after_build_" + string(component)); err != nil {
-			return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+			return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 		}
 		observe.GraphEvent("rebuild_component_complete", "snapshot_rebuild", string(component), task.ID, task.SubmissionRequestID, "")
 		observe.GraphRebuildComponentOutcomes.WithLabelValues(string(component), "succeeded").Inc()
 		observe.GraphRebuildComponentDuration.WithLabelValues(string(component), "succeeded").Observe(time.Since(started).Seconds())
 	}
 	if err := s.graphRebuildBoundary("before_promotion"); err != nil {
-		return s.failGraphRebuild(ctx, task.ID, rebuildGraphError(err))
+		return s.failOrRequeueGraphRebuild(ctx, task.ID, rebuildGraphError(err))
 	}
 	err := s.promoteGraphIndexRebuild(ctx, task.ID)
 	if err == nil {
@@ -587,6 +587,17 @@ func (s *Store) failGraphRebuild(ctx context.Context, taskID string, graphErr *g
 		observe.GraphEvent("task_terminal", "snapshot_rebuild", "", taskID, requestID.String, string(graphErr.Code))
 	}
 	return err
+}
+
+// failOrRequeueGraphRebuild preserves a running task when shutdown cancels
+// provider work. Startup recovery owns the durable transition back to queued;
+// recording a terminal failure here would violate the four-state restart
+// contract and prevent the original task ID from being resumed.
+func (s *Store) failOrRequeueGraphRebuild(ctx context.Context, taskID string, graphErr *graphsnapshot.Error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return s.failGraphRebuild(ctx, taskID, graphErr)
 }
 
 func (s *Store) observeGraphTaskTerminal(ctx context.Context, taskID string, state graphsnapshot.TaskState) {

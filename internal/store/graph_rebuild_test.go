@@ -387,6 +387,40 @@ func TestFailedRebuildTaskRetainsSubmissionRequestIDInError(t *testing.T) {
 	}
 }
 
+func TestCancelledRebuildIsRequeuedOnRecovery(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedTrustedRebuildSnapshot(t, s, "cancelled-rebuild", "v1")
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id='initial-task'`); err != nil {
+		t.Fatal(err)
+	}
+	components := []operability.Component{operability.ComponentVector}
+	if _, _, err = s.AdmitGraphRebuild(context.Background(), "cancelled-rebuild", "v1", "cancelled", operability.RequestFingerprint(components), "request", "cancelled-task", components); err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+	if err != nil || !found {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err = s.ProcessGraphRebuild(ctx, task, graphEmbedderFake{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled process err=%v", err)
+	}
+	if current, found, err := s.LookupGraphTask(context.Background(), task.ID); err != nil || !found || current.State != graphsnapshot.TaskRunning {
+		t.Fatalf("current=%+v found=%v err=%v", current, found, err)
+	}
+	if err = s.RecoverGraphTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if current, found, err := s.LookupGraphTask(context.Background(), task.ID); err != nil || !found || current.State != graphsnapshot.TaskQueued || current.Phase != "queued" {
+		t.Fatalf("recovered=%+v found=%v err=%v", current, found, err)
+	}
+}
+
 func TestInjectedPrePromotionFailurePreservesSelectedGeneration(t *testing.T) {
 	s, err := New(t.TempDir()+"/rag.db", 4)
 	if err != nil {

@@ -1,0 +1,1 @@
+{"before_restart":{"task_id":"task-rebuild-1","state":"running","phase":"building_fts","progress":0.55},"after_restart":{"task_id":"task-rebuild-1","state":"queued","phase":"queued","progress":0.55},"guarantees":["same_task_id","unselected_private_generation_removed","selected_generation_retained","terminal_resources_unchanged"]}

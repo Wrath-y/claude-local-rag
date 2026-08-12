@@ -1,0 +1,1 @@
+{"requested_components":["graph_indexes","fts","vector"],"failure_component":"vector","old_selected_generations":{"graph_indexes":"old-index","fts":"old-fts","vector":"old-vector"},"visible_generations_after_failure":{"graph_indexes":"old-index","fts":"old-fts","vector":"old-vector"},"task_state":"failed"}

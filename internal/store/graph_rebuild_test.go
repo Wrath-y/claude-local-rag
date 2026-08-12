@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
@@ -425,6 +426,144 @@ func TestInjectedPrePromotionFailurePreservesSelectedGeneration(t *testing.T) {
 	if err != nil || !found || stored.State != graphsnapshot.TaskFailed {
 		t.Fatalf("task=%+v found=%v err=%v", stored, found, err)
 	}
+}
+
+type countingGraphEmbedder struct{ calls atomic.Int32 }
+
+func (e *countingGraphEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.calls.Add(1)
+	return graphEmbedderFake{}.Embed(context.Background(), texts)
+}
+
+// TestGraphRebuildFailureBoundaries exercises every durable component and
+// validation boundary. A failed boundary may leave private staging data for
+// crash recovery, but it can never replace a selected generation. Replaying
+// the same idempotency key after reopen returns the original terminal task and
+// consequently cannot repeat vector provider work.
+func TestGraphRebuildFailureBoundaries(t *testing.T) {
+	components := []operability.Component{
+		operability.ComponentGraphIndexes,
+		operability.ComponentFTS,
+		operability.ComponentVector,
+	}
+	boundaries := []string{
+		"before_build_graph_indexes", "after_build_graph_indexes",
+		"before_validation_graph_indexes", "after_validation_graph_indexes",
+		"before_build_fts", "after_build_fts",
+		"before_validation_fts", "after_validation_fts",
+		"before_build_vector", "after_build_vector",
+		"before_validation_vector", "after_validation_vector",
+		"before_promotion", "after_promotion",
+	}
+	for _, boundary := range boundaries {
+		t.Run(boundary, func(t *testing.T) {
+			path := t.TempDir() + "/rag.db"
+			s, err := New(path, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedTrustedRebuildSnapshot(t, s, "failure-boundary", "v1")
+			if err = s.PopulateGraphSearchDocuments(context.Background(), "initial-task"); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.BuildGraphVectors(context.Background(), "initial-task", graphEmbedderFake{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id='initial-task'`); err != nil {
+				t.Fatal(err)
+			}
+			old := selectedGraphGenerations(t, s, "failure-boundary", "v1")
+			fingerprint := operability.RequestFingerprint(components)
+			if _, _, err = s.AdmitGraphRebuild(context.Background(), "failure-boundary", "v1", "boundary-"+boundary, fingerprint, "request", "rebuild-task", components); err != nil {
+				t.Fatal(err)
+			}
+			task, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+			if err != nil || !found {
+				t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+			}
+			embedder := &countingGraphEmbedder{}
+			s.graphRebuildFailpoint = func(name string) error {
+				if name == boundary {
+					return errors.New("injected " + boundary)
+				}
+				return nil
+			}
+			err = s.ProcessGraphRebuild(context.Background(), task, embedder)
+			stored, found, lookupErr := s.LookupGraphTask(context.Background(), task.ID)
+			if lookupErr != nil || !found {
+				t.Fatalf("stored=%+v found=%v err=%v", stored, found, lookupErr)
+			}
+			if boundary == "after_promotion" {
+				if err == nil || stored.State != graphsnapshot.TaskSucceeded {
+					t.Fatalf("post-promotion err=%v task=%+v", err, stored)
+				}
+			} else if err != nil || stored.State != graphsnapshot.TaskFailed {
+				t.Fatalf("err=%v task=%+v", err, stored)
+			}
+			if boundary != "after_promotion" && !equalGraphGenerations(old, selectedGraphGenerations(t, s, "failure-boundary", "v1")) {
+				t.Fatalf("selected generations changed: old=%v now=%v", old, selectedGraphGenerations(t, s, "failure-boundary", "v1"))
+			}
+			providerCalls := embedder.calls.Load()
+			if err = s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = New(path, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err = s.RecoverGraphTasks(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if boundary != "after_promotion" && !equalGraphGenerations(old, selectedGraphGenerations(t, s, "failure-boundary", "v1")) {
+				t.Fatalf("restart changed selected generations: old=%v now=%v", old, selectedGraphGenerations(t, s, "failure-boundary", "v1"))
+			}
+			var private int
+			if err = s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace='failure-boundary' AND version='v1' AND selected=0 AND state IN ('private','validated')`).Scan(&private); err != nil || private != 0 {
+				t.Fatalf("private generations=%d err=%v", private, err)
+			}
+			replayed, replayedOK, err := s.AdmitGraphRebuild(context.Background(), "failure-boundary", "v1", "boundary-"+boundary, fingerprint, "different-request", "ignored", components)
+			if err != nil || !replayedOK || replayed.ID != task.ID || replayed.State != stored.State {
+				t.Fatalf("replay=%+v replayed=%v err=%v", replayed, replayedOK, err)
+			}
+			if got := embedder.calls.Load(); got != providerCalls {
+				t.Fatalf("provider calls repeated after replay: before=%d after=%d", providerCalls, got)
+			}
+		})
+	}
+}
+
+func selectedGraphGenerations(t *testing.T, s *Store, namespace, version string) map[string]string {
+	t.Helper()
+	rows, err := s.DB().Query(`SELECT component,generation FROM graph_retrieval_generations WHERE namespace=? AND version=? AND selected=1 ORDER BY component`, namespace, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	selected := map[string]string{}
+	for rows.Next() {
+		var component, generation string
+		if err = rows.Scan(&component, &generation); err != nil {
+			t.Fatal(err)
+		}
+		selected[component] = generation
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return selected
+}
+
+func equalGraphGenerations(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for component, generation := range left {
+		if right[component] != generation {
+			return false
+		}
+	}
+	return true
 }
 
 func TestProcessGraphIndexRebuildPromotesAtomically(t *testing.T) {

@@ -171,7 +171,13 @@ func (s *Store) BuildPrivateGraphIndexes(ctx context.Context, taskID string) (st
 	if count != len(record.Edges)*2 {
 		return "", fmt.Errorf("graph-index adjacency coverage mismatch")
 	}
+	if err = s.graphRebuildBoundary("before_validation_" + string(operability.ComponentGraphIndexes)); err != nil {
+		return "", err
+	}
 	if err = validatePrivateGraphRebuildGeneration(ctx, tx, record, operability.ComponentGraphIndexes, generation, digest, nil); err != nil {
+		return "", err
+	}
+	if err = s.graphRebuildBoundary("after_validation_" + string(operability.ComponentGraphIndexes)); err != nil {
 		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_task_steps SET state='validated',generation=?,content_digest=?,updated_at=? WHERE task_id=? AND component='graph_indexes' AND state IN ('pending','building','validated')`, generation, digest, now, taskID); err != nil {
@@ -240,7 +246,13 @@ func (s *Store) BuildPrivateGraphFTS(ctx context.Context, taskID string) (string
 	if count != len(record.Nodes)+len(record.Edges) {
 		return "", fmt.Errorf("private FTS coverage mismatch")
 	}
+	if err = s.graphRebuildBoundary("before_validation_" + string(operability.ComponentFTS)); err != nil {
+		return "", err
+	}
 	if err = validatePrivateGraphRebuildGeneration(ctx, tx, record, operability.ComponentFTS, generation, digest, nil); err != nil {
+		return "", err
+	}
+	if err = s.graphRebuildBoundary("after_validation_" + string(operability.ComponentFTS)); err != nil {
 		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_task_steps SET state='validated',generation=?,content_digest=?,updated_at=? WHERE task_id=? AND component='fts' AND state IN ('pending','building','validated')`, generation, digest, now, taskID); err != nil {
@@ -357,7 +369,13 @@ func (s *Store) BuildPrivateGraphVectors(ctx context.Context, taskID string, emb
 	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,provider,model,dimensions,content_digest,created_at) VALUES(?,?, 'vector',?,'private',0,?,?,?,?,?,?)`, namespace, version, generation, identity.Algorithm, identity.Provider, identity.Model, identity.Dimensions, digest, now); err != nil {
 		return "", err
 	}
+	if err = s.graphRebuildBoundary("before_validation_" + string(operability.ComponentVector)); err != nil {
+		return "", err
+	}
 	if err = validatePrivateGraphRebuildGeneration(ctx, tx, record, operability.ComponentVector, generation, digest, &identity); err != nil {
+		return "", err
+	}
+	if err = s.graphRebuildBoundary("after_validation_" + string(operability.ComponentVector)); err != nil {
 		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_task_steps SET state='validated',generation=?,content_digest=?,updated_at=? WHERE task_id=? AND component='vector' AND state IN ('pending','building','validated')`, generation, digest, now, taskID); err != nil {

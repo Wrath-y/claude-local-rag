@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -291,7 +292,8 @@ func TestHealth_ReturnsOK(t *testing.T) {
 
 	h.Health(c)
 
-	// With a mock embedder that always succeeds, we expect 200 ok.
+	// Health is a side-effect-free compatibility document; it does not probe
+	// the embedder with synthetic content.
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -299,8 +301,55 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp["status"] != "ok" && resp["status"] != "degraded" {
-		t.Errorf("unexpected status: %v", resp["status"])
+	if (resp["status"] != "ok" && resp["status"] != "degraded") || resp["schema_version"] != "1.0" || resp["service"] != "local-rag" {
+		t.Errorf("unexpected health response: %v", resp)
+	}
+}
+
+func TestHealthReportsEffectiveGraphSnapshotLimits(t *testing.T) {
+	st := newTestStore(t)
+	deps := testDeps(t, st)
+	deps.Config.Graph.MaxPayloadBytes = 1234
+	deps.Config.Graph.MaxNodes = 12
+	deps.Config.Graph.MaxEdges = 34
+	h := New(deps)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(http.MethodGet, "/health", nil)
+	h.Health(c)
+	var response struct {
+		Limits []struct {
+			Name  string `json:"name"`
+			Value int    `json:"value"`
+		} `json:"limits"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, limit := range response.Limits {
+		got[limit.Name] = limit.Value
+	}
+	for name, want := range map[string]int{"snapshot_payload_bytes": 1234, "snapshot_nodes": 12, "snapshot_edges": 34} {
+		if got[name] != want {
+			t.Fatalf("%s=%d want %d", name, got[name], want)
+		}
+	}
+}
+
+func TestHealthReportsUnavailableAfterStoreLifecycleCloses(t *testing.T) {
+	st := newTestStore(t)
+	deps := testDeps(t, st)
+	h := New(deps)
+	if err := h.deps.Stores.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request, _ = http.NewRequest(http.MethodGet, "/health", nil)
+	h.Health(c)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"status":"unavailable"`) || strings.Contains(w.Body.String(), "rag.db") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 

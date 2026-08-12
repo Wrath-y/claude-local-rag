@@ -32,3 +32,22 @@ func TestRender_ContainsMetricName(t *testing.T) {
 		t.Errorf("expected Render() output to contain 'rag_ingest_total', got:\n%s", output)
 	}
 }
+
+func TestGraphMetricsUseOnlyBoundedLabels(t *testing.T) {
+	InitMetrics()
+	GraphHealthState.WithLabelValues("degraded").Set(1)
+	GraphTaskTransitions.WithLabelValues("snapshot_rebuild", "running").Inc()
+	GraphRebuildComponentOutcomes.WithLabelValues("vector", "succeeded").Inc()
+	GraphRecoveryTotal.Inc()
+	output := string(Render())
+	for _, want := range []string{"rag_graph_health_state", "rag_graph_task_transitions_total", "rag_graph_rebuild_component_outcomes_total", "rag_graph_recovery_total"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("metric %q missing from %s", want, output)
+		}
+	}
+	for _, forbidden := range []string{"namespace=", "task_id=", "request_id=", "generation="} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("unbounded label %q in %s", forbidden, output)
+		}
+	}
+}

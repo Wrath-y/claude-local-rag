@@ -33,6 +33,12 @@ type GraphTaskProcessor interface {
 	ReconcileGraphSnapshot(context.Context, string, string) error
 }
 
+// GraphRebuildProcessor is an optional operation-dispatch seam. Keeping it
+// separate leaves the lifecycle processor compatible with graph/1..3 stores.
+type GraphRebuildProcessor interface {
+	ProcessGraphRebuild(context.Context, Task, Embedder) error
+}
+
 // Start launches one graph-task worker. Calling it repeatedly is idempotent;
 // Wake coalesces submissions and Close cancels the dispatcher then waits for
 // the worker to leave its current dispatch boundary.
@@ -87,6 +93,13 @@ func (s *Service) Wake() {
 // A required failure is terminal; a vector failure is a successful degraded
 // completion once graph and FTS are ready.
 func (s *Service) Dispatch(ctx context.Context, task Task, embedder Embedder) error {
+	if task.Operation == "snapshot_rebuild" {
+		processor, ok := s.repository.(GraphRebuildProcessor)
+		if !ok {
+			return fmt.Errorf("graph snapshot repository cannot process rebuild tasks")
+		}
+		return processor.ProcessGraphRebuild(ctx, task, embedder)
+	}
 	processor, ok := s.repository.(GraphTaskProcessor)
 	if !ok {
 		return fmt.Errorf("graph snapshot repository cannot process tasks")
@@ -103,7 +116,7 @@ func (s *Service) Dispatch(ctx context.Context, task Task, embedder Embedder) er
 		states[component.Name] = component.State
 	}
 	if states[ComponentGraph] != ComponentReady {
-		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "graph", 10); err != nil {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "graph", 1000); err != nil {
 			return err
 		}
 		if err = processor.PromoteGraphComponent(ctx, task.ID); err != nil {
@@ -111,7 +124,7 @@ func (s *Service) Dispatch(ctx context.Context, task Task, embedder Embedder) er
 		}
 	}
 	if states[ComponentFTS] != ComponentReady {
-		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "fts", 50); err != nil {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "fts", 5000); err != nil {
 			return err
 		}
 		if err = processor.PopulateGraphSearchDocuments(ctx, task.ID); err != nil {
@@ -119,7 +132,7 @@ func (s *Service) Dispatch(ctx context.Context, task Task, embedder Embedder) er
 		}
 	}
 	if states[ComponentVector] != ComponentReady && states[ComponentVector] != ComponentFailed && states[ComponentVector] != ComponentUnavailable {
-		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "vector", 75); err != nil {
+		if _, err = processor.AdvanceGraphTaskProgress(ctx, task.ID, "vector", 7500); err != nil {
 			return err
 		}
 		if embedder == nil {

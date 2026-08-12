@@ -50,19 +50,24 @@ func (s *Store) WithRead(ctx context.Context, namespace, requestedVersion string
 	if status != graphsnapshot.SnapshotReady || ready != 1 {
 		return graphquery.ErrSnapshotNotReady
 	}
-	if err := fn(&graphReadView{tx: tx, namespace: namespace, version: version, contentHash: contentHash}); err != nil {
+	var indexGeneration sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM graph_retrieval_generations WHERE namespace=? AND version=? AND component='graph_indexes' AND selected=1 AND state='selected'`, namespace, version).Scan(&indexGeneration); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("resolve graph-index generation: %w", err)
+	}
+	if err := fn(&graphReadView{tx: tx, namespace: namespace, version: version, contentHash: contentHash, graphIndexGeneration: indexGeneration.String}); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 type graphReadView struct {
-	tx          *sql.Tx
-	namespace   string
-	version     string
-	contentHash string
-	nodes       map[string]graphsnapshot.Node
-	adjacency   map[graphquery.Direction]map[string][]graphsnapshot.Edge
+	tx                   *sql.Tx
+	namespace            string
+	version              string
+	contentHash          string
+	graphIndexGeneration string
+	nodes                map[string]graphsnapshot.Node
+	adjacency            map[graphquery.Direction]map[string][]graphsnapshot.Edge
 }
 
 func (v *graphReadView) Version() string     { return v.version }
@@ -174,6 +179,41 @@ func (v *graphReadView) loadAdjacency(ctx context.Context, ids []string, directi
 		}
 		for id := range cache {
 			cache[id] = uniqueEdges(cache[id])
+		}
+		return nil
+	}
+	if v.graphIndexGeneration != "" {
+		marks := make([]string, len(ids))
+		args := make([]any, 0, 4+len(ids))
+		args = append(args, v.namespace, v.version, v.graphIndexGeneration, string(direction))
+		for index, id := range ids {
+			marks[index] = "?"
+			args = append(args, id)
+		}
+		query := `SELECT edge.edge_id,edge.from_node_id,edge.to_node_id,edge.edge_type,edge.relation_kind,edge.confidence,edge.properties_json,edge.provenance_json FROM graph_index_adjacency AS adjacency JOIN graph_edges AS edge ON edge.namespace=adjacency.namespace AND edge.version=adjacency.version AND edge.edge_id=adjacency.edge_id WHERE adjacency.namespace=? AND adjacency.version=? AND adjacency.generation=? AND adjacency.direction=? AND adjacency.node_id IN (` + joinMarks(marks) + `)`
+		rows, err := v.tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("load graph-index adjacency: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var edge graphsnapshot.Edge
+			var confidence, properties, provenance string
+			if err := rows.Scan(&edge.ID, &edge.From, &edge.To, &edge.Type, &edge.RelationKind, &confidence, &properties, &provenance); err != nil {
+				return err
+			}
+			edge.Confidence, edge.Properties, edge.Provenance = json.Number(confidence), json.RawMessage(properties), json.RawMessage(provenance)
+			key := edge.From
+			if direction == graphquery.DirectionIncoming {
+				key = edge.To
+			}
+			cache[key] = append(cache[key], edge)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for id := range cache {
+			sort.Slice(cache[id], func(i, j int) bool { return cache[id][i].ID < cache[id][j].ID })
 		}
 		return nil
 	}

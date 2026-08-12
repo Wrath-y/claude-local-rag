@@ -37,7 +37,7 @@ func TestServiceDispatchCompletesDurableGraphTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	storedTask, found, err := s.LookupGraphTask(context.Background(), task.ID)
-	if err != nil || !found || storedTask.State != graphsnapshot.TaskSucceeded || storedTask.Progress != 100 {
+	if err != nil || !found || storedTask.State != graphsnapshot.TaskSucceeded || storedTask.Progress != 1 {
 		t.Fatalf("task=%#v found=%v err=%v", storedTask, found, err)
 	}
 	snapshot, found, err := s.LookupGraphSnapshot(context.Background(), "project", "revision")

@@ -19,6 +19,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/mcpserver"
 	"github.com/Wrath-y/local-rag/internal/observe"
+	"github.com/Wrath-y/local-rag/internal/operability"
 	"github.com/Wrath-y/local-rag/internal/provider"
 	"github.com/Wrath-y/local-rag/internal/sidecar"
 	"github.com/Wrath-y/local-rag/internal/store"
@@ -28,7 +29,7 @@ func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Request-ID")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept, X-Request-ID, Idempotency-Key")
 
 		if c.Request.Method == http.MethodOptions {
 			c.Status(http.StatusNoContent)
@@ -128,18 +129,21 @@ func main() {
 	// Build handler. Graph dependencies are supplied only after recovery starts;
 	// a graph migration/startup failure leaves every legacy route operational.
 	handlerDeps := handler.Deps{
-		Config:   cfg,
-		Stores:   stores,
-		Embedder: embedder,
-		Reranker: reranker,
-		LLM:      llm,
-		Chunker:  chunker,
+		Config:       cfg,
+		Stores:       stores,
+		Embedder:     embedder,
+		Reranker:     reranker,
+		LLM:          llm,
+		Chunker:      chunker,
+		VectorHealth: &operability.ProviderStateCache{Name: "vector", Provider: cfg.Embedding.Provider, Model: cfg.Embedding.Model},
+		RerankHealth: &operability.ProviderStateCache{Name: "rerank", Provider: cfg.Rerank.Provider, Model: cfg.Rerank.Model},
 	}
 	if graphAvailable {
 		handlerDeps.GraphService = graphService
 		handlerDeps.GraphSnapshotReader = st
 		handlerDeps.GraphTaskReader = st
 		handlerDeps.GraphLifecycle = st
+		handlerDeps.GraphRebuild = operability.RebuildService{Repository: st, Waker: graphService}
 	}
 	h := handler.New(handlerDeps)
 
@@ -153,6 +157,7 @@ func main() {
 	v1.GET("/graphs/:namespace/snapshots/:version", h.GetGraphSnapshot)
 	v1.POST("/graphs/:namespace/snapshots/:version/activate", h.ActivateGraphSnapshot)
 	v1.DELETE("/graphs/:namespace/snapshots/:version", h.DeleteGraphSnapshot)
+	v1.POST("/graphs/:namespace/snapshots/:version/rebuild", h.RebuildGraphSnapshot)
 	v1.POST("/graphs/:namespace/traverse", h.TraverseGraph)
 	v1.POST("/graphs/:namespace/paths", h.PathsGraph)
 	v1.POST("/graphs/:namespace/retrieve", h.RetrieveGraph)

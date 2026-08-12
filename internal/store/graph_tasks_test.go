@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -105,5 +106,61 @@ func TestLookupGraphTaskReturnsDurableTerminalResource(t *testing.T) {
 	}
 	if strings.Contains(task.Error.Message, "secret") {
 		t.Fatal("unexpected unsafe task error message")
+	}
+}
+
+func TestGraphTaskProgressIsFractionAndTerminalTaskCannotAdvance(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedGraphSnapshot(t, s, "task-progress", "v1", "progress")
+	if _, err = s.DB().Exec(`INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,created_at) VALUES('task-task-progress-v1','task-progress','v1','queued','queued',0,'2026-08-12T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	task, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+	if err != nil || !found {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+	if changed, err := s.AdvanceGraphTaskProgress(context.Background(), task.ID, "validating", 5000); err != nil || !changed {
+		t.Fatalf("advance changed=%v err=%v", changed, err)
+	}
+	stored, found, err := s.LookupGraphTask(context.Background(), task.ID)
+	if err != nil || !found || stored.Progress != 0.5 {
+		t.Fatalf("stored=%+v found=%v err=%v", stored, found, err)
+	}
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded',phase='completed',progress=10000 WHERE id=?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.AdvanceGraphTaskProgress(context.Background(), task.ID, "completed", 10000); err != nil || changed {
+		t.Fatalf("terminal advance changed=%v err=%v", changed, err)
+	}
+}
+
+func TestGraphTaskWarningsAreCanonicalAndImmutableAfterTerminal(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	seedGraphSnapshot(t, s, "task-warnings", "v1", "warnings")
+	if _, err = s.DB().Exec(`INSERT INTO graph_tasks(id,namespace,version,state,phase,created_at) VALUES('task-task-warnings-v1','task-warnings','v1','queued','queued','2026-08-12T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, warning := range []string{"vector unavailable", "fts retained", "vector unavailable"} {
+		if _, err = s.AddGraphTaskWarning(context.Background(), "task-task-warnings-v1", warning); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task, found, err := s.LookupGraphTask(context.Background(), "task-task-warnings-v1")
+	if err != nil || !found || !reflect.DeepEqual(task.Warnings, []string{"fts retained", "vector unavailable"}) {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+	if _, err = s.DB().Exec(`UPDATE graph_tasks SET state='succeeded' WHERE id='task-task-warnings-v1'`); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.AddGraphTaskWarning(context.Background(), "task-task-warnings-v1", "late"); err != nil || changed {
+		t.Fatalf("terminal warning changed=%v err=%v", changed, err)
 	}
 }

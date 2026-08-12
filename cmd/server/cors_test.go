@@ -33,7 +33,7 @@ func TestCORSMiddleware_AllowsAnyOriginAndHandlesPreflight(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Methods"); got != "GET, POST, PUT, DELETE, OPTIONS" {
 		t.Fatalf("unexpected allowed methods: %q", got)
 	}
-	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Accept, X-Request-ID" {
+	if got := w.Header().Get("Access-Control-Allow-Headers"); got != "Content-Type, Accept, X-Request-ID, Idempotency-Key" {
 		t.Fatalf("unexpected allowed headers: %q", got)
 	}
 }

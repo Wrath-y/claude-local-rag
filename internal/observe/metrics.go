@@ -154,6 +154,21 @@ var (
 		prometheus.CounterOpts{Name: "rag_feedback_operations_total", Help: "Local feedback operations by safe result category"},
 		[]string{"operation"},
 	)
+	GraphHealthState = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "rag_graph_health_state", Help: "Current graph service health state"},
+		[]string{"state"},
+	)
+	GraphTaskTransitions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "rag_graph_task_transitions_total", Help: "Durable graph task transitions by operation and state"},
+		[]string{"operation", "state"},
+	)
+	GraphRebuildComponentOutcomes = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "rag_graph_rebuild_component_outcomes_total", Help: "Graph rebuild component outcomes"},
+		[]string{"component", "outcome"},
+	)
+	GraphRecoveryTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{Name: "rag_graph_recovery_total", Help: "Graph worker recovery transactions"},
+	)
 )
 
 func InitMetrics() {
@@ -184,6 +199,10 @@ func InitMetrics() {
 		SyncDuration,
 		SyncEventsTotal,
 		FeedbackOperations,
+		GraphHealthState,
+		GraphTaskTransitions,
+		GraphRebuildComponentOutcomes,
+		GraphRecoveryTotal,
 	)
 }
 

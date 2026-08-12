@@ -28,8 +28,10 @@ func TestGraphRetrievalRetentionKeepsActiveUnionNewestTwenty(t *testing.T) {
 			{`INSERT INTO graph_snapshots(namespace,version,schema_version,content_hash,task_id,status,query_ready,created_at,updated_at) VALUES(?,?,?,?,?,'ready',1,?,?)`, []any{namespace, version, "1.0", hash, taskID, timestamp, timestamp}},
 			{`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,content_digest,created_at) VALUES(?,?, 'fts',?,'selected',1,'fts5',?,?)`, []any{namespace, version, "fts-" + version, hash, timestamp}},
 			{`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,dimensions,content_digest,created_at) VALUES(?,?, 'vector',?,'selected',1,'vec',2,?,?)`, []any{namespace, version, "vector-" + version, hash, timestamp}},
+			{`INSERT INTO graph_retrieval_generations(namespace,version,component,generation,state,selected,algorithm,content_digest,created_at) VALUES(?,?, 'graph_indexes',?,'selected',1,'edge-adjacency-v1',?,?)`, []any{namespace, version, "indexes-" + version, hash, timestamp}},
 			{`INSERT INTO graph_search_documents(namespace,version,generation,entity_kind,entity_id,search_text) VALUES(?,?,?,'node','node','text')`, []any{namespace, version, "fts-" + version}},
 			{`INSERT INTO graph_vector_items(namespace,version,generation,entity_kind,entity_id,dimensions) VALUES(?,?,?,'node','node',2)`, []any{namespace, version, "vector-" + version}},
+			{`INSERT INTO graph_index_adjacency(namespace,version,generation,direction,node_id,edge_id,relation_kind,edge_type) VALUES(?,?,?,'outgoing','node','edge','explicit','kind')`, []any{namespace, version, "indexes-" + version}},
 		} {
 			if _, err = s.DB().Exec(statement.query, statement.args...); err != nil {
 				t.Fatal(err)
@@ -43,10 +45,10 @@ func TestGraphRetrievalRetentionKeepsActiveUnionNewestTwenty(t *testing.T) {
 		t.Fatal(err)
 	}
 	var selected, evicted, retainedFTS, evictedFTS, snapshots int
-	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace=? AND selected=1`, namespace).Scan(&selected); err != nil || selected != 42 {
-		t.Fatalf("selected=%d err=%v, want 42 (21 versions × 2)", selected, err)
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace=? AND selected=1`, namespace).Scan(&selected); err != nil || selected != 63 {
+		t.Fatalf("selected=%d err=%v, want 63 (21 versions × 3)", selected, err)
 	}
-	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace=? AND state='evicted'`, namespace).Scan(&evicted); err != nil || evicted != 2 {
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_retrieval_generations WHERE namespace=? AND state='evicted'`, namespace).Scan(&evicted); err != nil || evicted != 3 {
 		t.Fatalf("evicted=%d err=%v", evicted, err)
 	}
 	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_search_documents WHERE namespace=?`, namespace).Scan(&retainedFTS); err != nil || retainedFTS != 21 {
@@ -58,6 +60,10 @@ func TestGraphRetrievalRetentionKeepsActiveUnionNewestTwenty(t *testing.T) {
 	var evictedVectors int
 	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_vector_items WHERE namespace=? AND version='v01'`, namespace).Scan(&evictedVectors); err != nil || evictedVectors != 0 {
 		t.Fatalf("evicted vector rows=%d err=%v", evictedVectors, err)
+	}
+	var evictedIndexes int
+	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_index_adjacency WHERE namespace=? AND version='v01'`, namespace).Scan(&evictedIndexes); err != nil || evictedIndexes != 0 {
+		t.Fatalf("evicted graph-index rows=%d err=%v", evictedIndexes, err)
 	}
 	if err = s.DB().QueryRow(`SELECT count(*) FROM graph_snapshots WHERE namespace=?`, namespace).Scan(&snapshots); err != nil || snapshots != 22 {
 		t.Fatalf("snapshots=%d err=%v", snapshots, err)

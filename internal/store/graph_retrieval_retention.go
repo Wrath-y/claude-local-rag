@@ -78,6 +78,10 @@ func (s *Store) ApplyGraphRetrievalRetention(ctx context.Context, namespace stri
 			if _, err = tx.ExecContext(ctx, `DELETE FROM graph_vector_items WHERE namespace=? AND version=? AND generation=?`, namespace, item.version, item.generation); err != nil {
 				return err
 			}
+		case "graph_indexes":
+			if _, err = tx.ExecContext(ctx, `DELETE FROM graph_index_adjacency WHERE namespace=? AND version=? AND generation=?`, namespace, item.version, item.generation); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unknown retrieval generation component %q", item.component)
 		}

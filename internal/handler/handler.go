@@ -12,6 +12,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 	"github.com/Wrath-y/local-rag/internal/management"
 	"github.com/Wrath-y/local-rag/internal/observe"
+	"github.com/Wrath-y/local-rag/internal/operability"
 	"github.com/Wrath-y/local-rag/internal/provider"
 	"github.com/Wrath-y/local-rag/internal/sourcesync"
 	"github.com/Wrath-y/local-rag/internal/store"
@@ -37,6 +38,8 @@ type Deps struct {
 	GraphLifecycle      GraphSnapshotLifecycle
 	GraphRetrieval      GraphRetrievalService
 	GraphRebuild        GraphRebuildService
+	VectorHealth        *operability.ProviderStateCache
+	RerankHealth        *operability.ProviderStateCache
 	// LoaderRegistry and FeishuResolver make input resolution explicit and
 	// replaceable in tests. A nil resolver safely rejects Feishu URLs.
 	LoaderRegistry *document.Registry
@@ -60,6 +63,8 @@ type Handler struct {
 	graphQuery       *graphquery.Service
 	graphRetrieval   GraphRetrievalService
 	graphRebuild     GraphRebuildService
+	vectorHealth     *operability.ProviderStateCache
+	rerankHealth     *operability.ProviderStateCache
 
 	// runtime toggleable state
 	rerankEnabled        bool
@@ -103,6 +108,8 @@ func New(deps Deps) *Handler {
 		graphLifecycle:       deps.GraphLifecycle,
 		graphRetrieval:       deps.GraphRetrieval,
 		graphRebuild:         deps.GraphRebuild,
+		vectorHealth:         deps.VectorHealth,
+		rerankHealth:         deps.RerankHealth,
 		queryRewriteStrategy: "expansion",
 		chunkStrategy:        strategy,
 	}

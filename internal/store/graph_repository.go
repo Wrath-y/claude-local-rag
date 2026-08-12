@@ -40,6 +40,22 @@ type GraphSnapshotRecord struct {
 	QueryReady    bool
 	Nodes         []graphsnapshot.Node
 	Edges         []graphsnapshot.Edge
+	Generations   []GraphGenerationRecord
+}
+
+// GraphGenerationRecord is safe derived-index metadata for a scoped graph
+// source; it never includes node text, vectors, or provider payloads.
+type GraphGenerationRecord struct {
+	Component     string
+	Generation    string
+	State         string
+	Selected      bool
+	Algorithm     string
+	Provider      string
+	Model         string
+	Dimensions    int
+	Tokenizer     string
+	ContentDigest string
 }
 
 // LookupGraphTask returns the durable task resource without inferring state
@@ -53,9 +69,10 @@ func (s *Store) LookupGraphTask(ctx context.Context, id string) (graphsnapshot.T
 	}
 	var task graphsnapshot.Task
 	var createdAt string
+	var progress int
 	var startedAt, finishedAt, errorJSON, resultJSON, warningsJSON, sourceHash, submissionRequestID sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT id,namespace,version,operation,phase,progress,created_at,started_at,finished_at,warnings_json,error_json,result_json,source_hash,submission_request_id,state FROM graph_tasks WHERE id=?`, id).Scan(
-		&task.ID, &task.Namespace, &task.Version, &task.Operation, &task.Phase, &task.Progress, &createdAt, &startedAt, &finishedAt, &warningsJSON, &errorJSON, &resultJSON, &sourceHash, &submissionRequestID, &task.State,
+		&task.ID, &task.Namespace, &task.Version, &task.Operation, &task.Phase, &progress, &createdAt, &startedAt, &finishedAt, &warningsJSON, &errorJSON, &resultJSON, &sourceHash, &submissionRequestID, &task.State,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return graphsnapshot.Task{}, false, nil
@@ -63,6 +80,7 @@ func (s *Store) LookupGraphTask(ctx context.Context, id string) (graphsnapshot.T
 	if err != nil {
 		return graphsnapshot.Task{}, false, fmt.Errorf("lookup graph task: %w", err)
 	}
+	task.Progress = float64(progress) / 10000
 	var parseErr error
 	if task.CreatedAt, parseErr = time.Parse(time.RFC3339Nano, createdAt); parseErr != nil {
 		return graphsnapshot.Task{}, false, fmt.Errorf("parse graph task created_at: %w", parseErr)
@@ -336,6 +354,23 @@ func (s *Store) ReadGraphSnapshot(ctx context.Context, namespace, version string
 	}
 	if err := edges.Close(); err != nil {
 		return GraphSnapshotRecord{}, fmt.Errorf("close graph edges: %w", err)
+	}
+	generations, err := tx.QueryContext(ctx, `SELECT component,generation,state,selected,algorithm,COALESCE(provider,''),COALESCE(model,''),COALESCE(dimensions,0),COALESCE(tokenizer,''),content_digest FROM graph_retrieval_generations WHERE namespace=? AND version=? ORDER BY component,generation`, namespace, version)
+	if err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("read graph generations: %w", err)
+	}
+	defer generations.Close()
+	for generations.Next() {
+		var generation GraphGenerationRecord
+		var selected int
+		if err := generations.Scan(&generation.Component, &generation.Generation, &generation.State, &selected, &generation.Algorithm, &generation.Provider, &generation.Model, &generation.Dimensions, &generation.Tokenizer, &generation.ContentDigest); err != nil {
+			return GraphSnapshotRecord{}, fmt.Errorf("scan graph generation: %w", err)
+		}
+		generation.Selected = selected == 1
+		record.Generations = append(record.Generations, generation)
+	}
+	if err := generations.Err(); err != nil {
+		return GraphSnapshotRecord{}, fmt.Errorf("iterate graph generations: %w", err)
 	}
 	return record, nil
 }

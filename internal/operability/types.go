@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
 )
@@ -80,11 +81,12 @@ type Limit struct {
 }
 
 type Dependency struct {
-	Name     string          `json:"name"`
-	State    CapabilityState `json:"state"`
-	Reason   string          `json:"reason,omitempty"`
-	Provider string          `json:"provider,omitempty"`
-	Model    string          `json:"model,omitempty"`
+	Name      string          `json:"name"`
+	State     CapabilityState `json:"state"`
+	Reason    string          `json:"reason,omitempty"`
+	Provider  string          `json:"provider,omitempty"`
+	Model     string          `json:"model,omitempty"`
+	CheckedAt *time.Time      `json:"checked_at,omitempty"`
 }
 
 type Health struct {

@@ -126,7 +126,7 @@ type Task struct {
 	Version             string          `json:"snapshot_version"`
 	State               TaskState       `json:"state"`
 	Phase               string          `json:"phase"`
-	Progress            int             `json:"progress"`
+	Progress            float64         `json:"progress"`
 	Warnings            []string        `json:"warnings"`
 	SourceHash          string          `json:"source_hash,omitempty"`
 	SubmissionRequestID string          `json:"submission_request_id,omitempty"`

@@ -81,6 +81,28 @@ paths:
       responses:
         '200': { description: Snapshot-bound hybrid graph retrieval result, content: { application/json: { schema: { $ref: '#/components/schemas/GraphRetrieveResponse' } } } }
         default: { $ref: '#/components/responses/GraphError' }
+  /v1/graphs/{namespace}/snapshots/{version}/rebuild:
+    parameters:
+      - $ref: '#/components/parameters/Namespace'
+      - $ref: '#/components/parameters/Version'
+      - $ref: '#/components/parameters/IdempotencyKey'
+    post:
+      operationId: rebuildGraphSnapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RebuildRequest' }
+      responses:
+        '202':
+          description: Durable rebuild submission or idempotent replay
+          headers:
+            Location: { schema: { type: string, minLength: 1 } }
+            X-Request-ID: { schema: { type: string, minLength: 1 } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RebuildSubmission' }
+        default: { $ref: '#/components/responses/GraphError' }
   /v1/tasks/{task_id}:
     parameters:
       - $ref: '#/components/parameters/TaskID'
@@ -89,11 +111,18 @@ paths:
       responses:
         '200': { description: Durable graph task, content: { application/json: { schema: { $ref: '#/components/schemas/Task' } } } }
         default: { $ref: '#/components/responses/GraphError' }
+  /health:
+    get:
+      operationId: graphHealth
+      responses:
+        '200': { description: Healthy or degraded service, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
+        '503': { description: Core graph storage unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Health' } } } }
 components:
   parameters:
     Namespace: { name: namespace, in: path, required: true, schema: { type: string, minLength: 1 } }
     Version: { name: version, in: path, required: true, schema: { type: string, minLength: 1 } }
     TaskID: { name: task_id, in: path, required: true, schema: { type: string, minLength: 1 } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 128 } }
   responses:
     GraphError:
       description: Stable versioned lifecycle error
@@ -176,18 +205,71 @@ components:
         error: { $ref: '#/components/schemas/GraphError' }
     Task:
       type: object
-      required: [id, namespace, version, state, phase, progress, created_at]
+      required: [task_id, operation, namespace, snapshot_version, state, phase, progress, warnings, created_at]
       properties:
-        id: { type: string }
+        task_id: { type: string }
+        operation: { type: string, enum: [snapshot_build, snapshot_rebuild] }
         namespace: { type: string }
-        version: { type: string }
+        snapshot_version: { type: string }
         state: { type: string, enum: [queued, running, succeeded, failed] }
-        phase: { type: string }
-        progress: { type: integer, minimum: 0, maximum: 100 }
+        phase: { type: string, enum: [queued, validating_source, building_graph_indexes, building_fts, building_vector, validating, promoting, completed] }
+        progress: { type: number, minimum: 0, maximum: 1 }
+        warnings: { type: array, items: { type: string } }
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time }
         finished_at: { type: string, format: date-time }
         error: { $ref: '#/components/schemas/GraphError' }
+        result: { type: object, additionalProperties: true }
+    RebuildRequest:
+      type: object
+      additionalProperties: false
+      required: [components]
+      properties:
+        components:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [graph_indexes, fts, vector] }
+    RebuildSubmission:
+      type: object
+      required: [task_id, state, task_url, components, namespace, snapshot_version, replayed]
+      properties:
+        task_id: { type: string }
+        state: { type: string, enum: [queued, running, succeeded, failed] }
+        task_url: { type: string }
+        components: { type: array, items: { type: string, enum: [graph_indexes, fts, vector] } }
+        namespace: { type: string }
+        snapshot_version: { type: string }
+        replayed: { type: boolean }
+    Health:
+      type: object
+      required: [schema_version, status, service, service_version, api_versions, supported_schema_versions, capabilities, limits, dependencies]
+      properties:
+        schema_version: { type: string, enum: ['1.0'] }
+        status: { type: string, enum: [ok, degraded, unavailable] }
+        service: { type: string, enum: [local-rag] }
+        service_version: { type: string }
+        api_versions: { type: array, items: { type: string } }
+        supported_schema_versions: { type: array, items: { type: string } }
+        capabilities: { type: array, items: { $ref: '#/components/schemas/HealthState' } }
+        limits: { type: array, items: { $ref: '#/components/schemas/Limit' } }
+        dependencies: { type: array, items: { $ref: '#/components/schemas/HealthState' } }
+    HealthState:
+      type: object
+      required: [name, state]
+      properties:
+        name: { type: string }
+        state: { type: string, enum: [available, degraded, unavailable, disabled] }
+        reason: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        checked_at: { type: string, format: date-time }
+    Limit:
+      type: object
+      required: [name, value]
+      properties:
+        name: { type: string }
+        value: { type: integer, minimum: 0 }
     Activation:
       type: object
       required: [namespace, active_version, changed]
@@ -202,7 +284,7 @@ components:
       properties:
         code:
           type: string
-          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, INVALID_GRAPH_QUERY, INVALID_RETRIEVAL_REQUEST, LIMIT_EXCEEDED, NO_ACTIVE_SNAPSHOT, NODE_NOT_FOUND, GRAPH_STORE_UNAVAILABLE, SNAPSHOT_INDEX_NOT_READY, RETRIEVAL_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [INVALID_SNAPSHOT_REQUEST, DUPLICATE_NODE_ID, DUPLICATE_EDGE_ID, DANGLING_EDGE, INVALID_RELATION_PROVENANCE, INVALID_DELTA_OPERATION, BASE_SNAPSHOT_NOT_FOUND, BASE_SNAPSHOT_NOT_READY, CONTENT_HASH_MISMATCH, CONTENT_HASH_CONFLICT, SNAPSHOT_NOT_FOUND, TASK_NOT_FOUND, SNAPSHOT_NOT_READY, ACTIVE_SNAPSHOT_DELETE_FORBIDDEN, SNAPSHOT_WRITE_IN_PROGRESS, INVALID_GRAPH_QUERY, INVALID_RETRIEVAL_REQUEST, INVALID_REBUILD_REQUEST, LIMIT_EXCEEDED, NO_ACTIVE_SNAPSHOT, NODE_NOT_FOUND, GRAPH_STORE_UNAVAILABLE, SNAPSHOT_INDEX_NOT_READY, IDEMPOTENCY_CONFLICT, REIMPORT_REQUIRED, RETRIEVAL_UNAVAILABLE, INTERNAL_ERROR]
         message: { type: string, minLength: 1 }
         retryable: { type: boolean }
         details: { type: object, additionalProperties: true }

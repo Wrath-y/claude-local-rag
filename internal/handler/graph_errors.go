@@ -125,7 +125,10 @@ func writeGraphError(c *gin.Context, graphErr *graphsnapshot.Error) {
 	}
 
 	if graphErr.Cause != nil {
-		slog.Error("graph lifecycle request failed", "code", graphErr.Code, "request_id", graphRequestID(c), "err", graphErr.Cause)
+		// Causes may carry SQL, provider payloads, paths, or credentials. Public
+		// graph logging is intentionally correlation-only; detailed local debug
+		// instrumentation must sanitize at its own boundary.
+		slog.Error("graph lifecycle request failed", "code", graphErr.Code, "request_id", graphRequestID(c))
 	}
 
 	c.AbortWithStatusJSON(graphErrorStatuses[graphErr.Code], graphErrorResponse{

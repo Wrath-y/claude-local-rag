@@ -109,7 +109,7 @@ func TestGraphSnapshotActivationAndDeletionHandlers(t *testing.T) {
 func TestGetGraphTaskReturnsEveryDurableStateAndNotFound(t *testing.T) {
 	for _, state := range []graphsnapshot.TaskState{graphsnapshot.TaskQueued, graphsnapshot.TaskRunning, graphsnapshot.TaskSucceeded, graphsnapshot.TaskFailed} {
 		t.Run(string(state), func(t *testing.T) {
-			reader := &graphTaskReaderFake{task: graphsnapshot.Task{ID: "task", Namespace: "project", Version: "revision", State: state, Phase: "fts", Progress: 50}, found: true}
+			reader := &graphTaskReaderFake{task: graphsnapshot.Task{ID: "task", Namespace: "project", Version: "revision", State: state, Phase: "fts", Progress: 0.5}, found: true}
 			handler := New(Deps{Config: &config.Config{}, GraphTaskReader: reader})
 			response := httptest.NewRecorder()
 			newGraphSnapshotRouter(handler).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/tasks/task", nil))

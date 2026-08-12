@@ -98,6 +98,27 @@ func TestIndexRebuildSuccessRetainsOldIndex(t *testing.T) {
 	}
 }
 
+func TestLegacyIndexStatusKeepsItsFlatNonV1Envelope(t *testing.T) {
+	st := newTestStore(t)
+	h := New(testDeps(t, st))
+	response := indexRequest(t, h, http.MethodGet, "/index/status")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["state"]; !ok {
+		t.Fatalf("legacy payload=%v", payload)
+	}
+	for _, absent := range []string{"operation", "namespace", "snapshot_version", "request_id"} {
+		if _, ok := payload[absent]; ok {
+			t.Fatalf("legacy payload unexpectedly has %s: %v", absent, payload)
+		}
+	}
+}
+
 func TestIndexRebuildDuplicateAndOnlineRead(t *testing.T) {
 	st := newTestStore(t)
 	if _, err := st.InsertChunk("online retrieval", "test", "online", "", "", []float32{1, 0, 0, 0}); err != nil {

@@ -64,7 +64,7 @@
 - [x] 8.2 Create `tests/contract/fixtures/graph-service-operability-v1/` with a versioned SHA-256 manifest and deterministic health ok/degraded/unavailable, rebuild submission/replay/conflict, task phases/terminal states, restart, atomic generation, failure preservation, and `REIMPORT_REQUIRED` fixtures.
 - [x] 8.3 Add Eco Guardian consumer transcripts spanning health negotiation, full/delta sync, activation, traverse, paths, hybrid/degraded retrieval, evicted-index detection, explicit rebuild, polling, restart, fixed-result equivalence, reimport, and the shared request-ID/error envelope.
 - [ ] 8.4 Add real Gin plus temporary `graph/1..4` SQLite provider tests with deterministic fake Embedder/Reranker that replay all #1–#4 fixtures, validate bodies against OpenAPI, verify manifest digests, and compare canonical results independently of request-specific IDs/timestamps.
-- [ ] 8.5 Add contract compatibility tests proving service SemVer is diagnostic while API/schema/capability fields control compatibility, unknown additive health fields are tolerated by the consumer fixture, and legacy non-`/v1` envelopes/tasks remain unchanged.
+- [x] 8.5 Add contract compatibility tests proving service SemVer is diagnostic while API/schema/capability fields control compatibility, unknown additive health fields are tolerated by the consumer fixture, and legacy non-`/v1` envelopes/tasks remain unchanged.
 
 ## 9. Recovery, Capacity, Regression, and Final Verification
 

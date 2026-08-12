@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -60,6 +61,22 @@ func (e observedEmbedder) Embed(ctx context.Context, texts []string) ([][]float3
 type observedReranker struct {
 	provider.RerankProvider
 	health *operability.ProviderStateCache
+}
+
+type shutdownHTTPServer interface{ Shutdown(context.Context) error }
+type shutdownCloser interface{ Close() }
+type shutdownSidecar interface{ Stop() }
+type shutdownStoreLifecycle interface{ Close() error }
+
+// shutdownOrdered prevents store closure while HTTP or background workers can
+// still admit or execute graph work. It is kept separate from signal handling
+// so its process shutdown contract is directly testable.
+func shutdownOrdered(ctx context.Context, server shutdownHTTPServer, graph, other shutdownCloser, sc shutdownSidecar, stores shutdownStoreLifecycle) error {
+	httpErr := server.Shutdown(ctx)
+	graph.Close()
+	other.Close()
+	sc.Stop()
+	return errors.Join(httpErr, stores.Close())
 }
 
 func (r observedReranker) Rerank(ctx context.Context, query string, documents []string, topN int) ([]provider.RerankResult, error) {
@@ -266,13 +283,7 @@ func main() {
 		slog.Info("shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("http shutdown failed", "err", err)
-		}
-		graphService.Close()
-		h.Close()
-		sc.Stop()
-		if err := stores.Close(); err != nil {
+		if err := shutdownOrdered(shutdownCtx, server, graphService, h, sc, stores); err != nil {
 			slog.Error("store shutdown failed", "err", err)
 		}
 	}()

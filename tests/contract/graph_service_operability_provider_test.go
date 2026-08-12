@@ -61,7 +61,7 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 	}
 
 	rebuild := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["fts","graph_indexes"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["vector","fts","graph_indexes"]}`))
 	request.Header.Set("Idempotency-Key", "fixture-key")
 	request.Header.Set("X-Request-ID", "fixture-request")
 	router.ServeHTTP(rebuild, request)
@@ -73,8 +73,22 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 		State      string   `json:"state"`
 		Components []string `json:"components"`
 	}
-	if err = json.Unmarshal(rebuild.Body.Bytes(), &submission); err != nil || submission.TaskID != "task-rebuild-1" || submission.State != "queued" || len(submission.Components) != 2 || submission.Components[0] != "graph_indexes" {
+	if err = json.Unmarshal(rebuild.Body.Bytes(), &submission); err != nil || submission.TaskID != "task-rebuild-1" || submission.State != "queued" || len(submission.Components) != 3 || submission.Components[0] != "graph_indexes" || submission.Components[2] != "vector" {
 		t.Fatalf("submission=%+v err=%v", submission, err)
+	}
+	replay := httptest.NewRecorder()
+	replayRequest := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["graph_indexes","fts","vector"]}`))
+	replayRequest.Header.Set("Idempotency-Key", "fixture-key")
+	router.ServeHTTP(replay, replayRequest)
+	if replay.Code != http.StatusAccepted || !bytes.Contains(replay.Body.Bytes(), []byte(`"replayed":true`)) {
+		t.Fatalf("replay=%d %s", replay.Code, replay.Body.String())
+	}
+	conflict := httptest.NewRecorder()
+	conflictRequest := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["fts"]}`))
+	conflictRequest.Header.Set("Idempotency-Key", "fixture-key")
+	router.ServeHTTP(conflict, conflictRequest)
+	if conflict.Code != http.StatusConflict || !bytes.Contains(conflict.Body.Bytes(), []byte(`"code":"IDEMPOTENCY_CONFLICT"`)) {
+		t.Fatalf("conflict=%d %s", conflict.Code, conflict.Body.String())
 	}
 
 	poll := httptest.NewRecorder()

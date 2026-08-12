@@ -256,21 +256,29 @@ func main() {
 	r.GET("/agent/sessions", h.AgentListSessions)
 	r.DELETE("/agent/session/:id", h.AgentDeleteSession)
 
-	// Graceful shutdown.
+	server := &http.Server{Addr: fmt.Sprintf(":%d", cfg.Server.Port), Handler: r}
+
+	// Graceful shutdown stops new HTTP admission before workers and storage.
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		slog.Info("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("http shutdown failed", "err", err)
+		}
 		graphService.Close()
+		h.Close()
 		sc.Stop()
-		stores.Close()
-		os.Exit(0)
+		if err := stores.Close(); err != nil {
+			slog.Error("store shutdown failed", "err", err)
+		}
 	}()
 
-	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	slog.Info("server starting", "addr", addr)
-	if err := r.Run(addr); err != nil {
+	slog.Info("server starting", "addr", server.Addr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}

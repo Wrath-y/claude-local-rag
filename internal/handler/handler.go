@@ -153,6 +153,14 @@ func New(deps Deps) *Handler {
 	return h
 }
 
+// Close stops handler-owned background workers before the store lifecycle is
+// closed. HTTP shutdown calls this only after admissions have stopped.
+func (h *Handler) Close() {
+	if h != nil && h.syncService != nil {
+		h.syncService.Close()
+	}
+}
+
 func connectorOptions(cfg *config.Config) document.Options {
 	if cfg == nil {
 		return document.Options{}

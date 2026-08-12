@@ -40,7 +40,7 @@
 - [x] 5.5 Implement one promotion transaction that rechecks source hash/task state, selects all requested validated generations together, records task success/result and generation identities/digests, leaves unrequested selectors unchanged, and rolls back the entire selection on any fault.
 - [x] 5.6 Integrate retired/private generation cleanup with the existing retention path and startup recovery so cleanup is idempotent, read-lease safe, and never deletes snapshots, Nodes, Edges, active heads, content hashes, tasks, or the last selected generation.
 - [x] 5.7 Add store/service failure injection before and after every graph-index, FTS, Vector, validation, and promotion boundary; assert failure/restart preserves old selected generations, hides partial rows, avoids duplicate provider work after durable boundaries, and eventually yields one terminal task.
-- [ ] 5.8 Add equivalence and concurrency tests proving fixed traverse/paths and retrieval results before/after rebuild, all-requested-component atomic visibility, unrequested-component preservation, identical IDs across namespaces/versions, and old-or-new consistency during promotion/retention/activation/deletion.
+- [x] 5.8 Add equivalence and concurrency tests proving fixed traverse/paths and retrieval results before/after rebuild, all-requested-component atomic visibility, unrequested-component preservation, identical IDs across namespaces/versions, and old-or-new consistency during promotion/retention/activation/deletion.
 
 ## 6. Structured Health and Runtime Wiring
 

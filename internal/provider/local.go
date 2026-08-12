@@ -89,6 +89,12 @@ func (p *LocalEmbedProvider) Embed(ctx context.Context, texts []string) ([][]flo
 // Dims returns the configured embedding dimensionality.
 func (p *LocalEmbedProvider) Dims() int { return p.dims }
 
+// Probe checks the local sidecar's capability endpoint without submitting
+// embedding content. It is intentionally suitable for bounded health checks.
+func (p *LocalEmbedProvider) Probe(ctx context.Context) error {
+	return probeLocalSidecar(ctx, p.client, p.baseURL)
+}
+
 // ---------------------------------------------------------------------------
 // LocalRerankProvider — calls a local sidecar /rerank endpoint.
 // ---------------------------------------------------------------------------
@@ -152,4 +158,26 @@ func (p *LocalRerankProvider) Rerank(ctx context.Context, query string, document
 	}
 
 	return result.Results, nil
+}
+
+// Probe checks the local sidecar's capability endpoint without submitting a
+// query or documents.
+func (p *LocalRerankProvider) Probe(ctx context.Context) error {
+	return probeLocalSidecar(ctx, p.client, p.baseURL)
+}
+
+func probeLocalSidecar(ctx context.Context, client *http.Client, baseURL string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("provider probe request: %w", err)
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("provider probe: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("provider probe status %d", response.StatusCode)
+	}
+	return nil
 }

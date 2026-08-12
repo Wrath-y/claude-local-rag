@@ -41,6 +41,33 @@ func corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func optionalProviderProbe(value any) operability.ProviderProbe {
+	probe, _ := value.(operability.ProviderProbe)
+	return probe
+}
+
+type observedEmbedder struct {
+	provider.EmbedProvider
+	health *operability.ProviderStateCache
+}
+
+func (e observedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	result, err := e.EmbedProvider.Embed(ctx, texts)
+	e.health.Observe(err)
+	return result, err
+}
+
+type observedReranker struct {
+	provider.RerankProvider
+	health *operability.ProviderStateCache
+}
+
+func (r observedReranker) Rerank(ctx context.Context, query string, documents []string, topN int) ([]provider.RerankResult, error) {
+	result, err := r.RerankProvider.Rerank(ctx, query, documents, topN)
+	r.health.Observe(err)
+	return result, err
+}
+
 func main() {
 	cfgPath := "config.yaml"
 	if p := os.Getenv("RAG_CONFIG"); p != "" {
@@ -87,6 +114,13 @@ func main() {
 	if err != nil {
 		slog.Error("rerank provider init failed", "err", err)
 		os.Exit(1)
+	}
+	vectorHealth := &operability.ProviderStateCache{Name: "vector", Provider: cfg.Embedding.Provider, Model: cfg.Embedding.Model, Probe: optionalProviderProbe(embedder)}
+	embedder = observedEmbedder{EmbedProvider: embedder, health: vectorHealth}
+	var rerankHealth *operability.ProviderStateCache
+	if reranker != nil {
+		rerankHealth = &operability.ProviderStateCache{Name: "rerank", Provider: cfg.Rerank.Provider, Model: cfg.Rerank.Model, Probe: optionalProviderProbe(reranker)}
+		reranker = observedReranker{RerankProvider: reranker, health: rerankHealth}
 	}
 
 	// LLM provider is optional — log warning but continue if not configured.
@@ -135,8 +169,8 @@ func main() {
 		Reranker:     reranker,
 		LLM:          llm,
 		Chunker:      chunker,
-		VectorHealth: &operability.ProviderStateCache{Name: "vector", Provider: cfg.Embedding.Provider, Model: cfg.Embedding.Model},
-		RerankHealth: &operability.ProviderStateCache{Name: "rerank", Provider: cfg.Rerank.Provider, Model: cfg.Rerank.Model},
+		VectorHealth: vectorHealth,
+		RerankHealth: rerankHealth,
 	}
 	if graphAvailable {
 		handlerDeps.GraphService = graphService

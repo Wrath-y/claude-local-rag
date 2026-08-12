@@ -16,6 +16,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/config"
 	"github.com/Wrath-y/local-rag/internal/document"
 	"github.com/Wrath-y/local-rag/internal/observe"
+	"github.com/Wrath-y/local-rag/internal/operability"
 	"github.com/Wrath-y/local-rag/internal/store"
 )
 
@@ -33,6 +34,10 @@ type mockEmbedder struct {
 	err  error
 	dims int
 }
+
+type healthProbeFake struct{ err error }
+
+func (p healthProbeFake) Probe(context.Context) error { return p.err }
 
 func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	if m.err != nil {
@@ -350,6 +355,28 @@ func TestHealthReportsUnavailableAfterStoreLifecycleCloses(t *testing.T) {
 	h.Health(c)
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"status":"unavailable"`) || strings.Contains(w.Body.String(), "rag.db") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHealthProviderProbeMatrixIsSanitizedAndSideEffectFree(t *testing.T) {
+	st := newTestStore(t)
+	deps := testDeps(t, st)
+	deps.VectorHealth = &operability.ProviderStateCache{Name: "vector", Provider: "local", Model: "model", Probe: healthProbeFake{err: errors.New("token=secret /tmp/private.db")}}
+	deps.RerankHealth = &operability.ProviderStateCache{Name: "rerank", Provider: "local", Model: "rerank-model", Probe: healthProbeFake{err: errors.New("raw response")}}
+	h := New(deps)
+	invoke := func() *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(response)
+		context.Request = httptest.NewRequest(http.MethodGet, "/health", nil)
+		h.Health(context)
+		return response
+	}
+	first, second := invoke(), invoke()
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"status":"degraded"`) || strings.Contains(first.Body.String(), "secret") || strings.Contains(first.Body.String(), "private.db") {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("health cache did not produce deterministic document\nfirst=%s\nsecond=%s", first.Body.String(), second.Body.String())
 	}
 }
 

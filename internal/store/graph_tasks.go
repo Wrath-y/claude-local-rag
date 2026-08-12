@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Wrath-y/local-rag/internal/graphsnapshot"
+	"github.com/Wrath-y/local-rag/internal/observe"
 )
 
 // ClaimOldestQueuedGraphTask atomically changes exactly one oldest queued task
@@ -50,7 +51,16 @@ WHERE id=(SELECT id FROM graph_tasks WHERE state='queued' ORDER BY created_at,id
 	if err := tx.Commit(); err != nil {
 		return graphsnapshot.Task{}, false, err
 	}
+	observe.GraphTaskTransitions.WithLabelValues(task.Operation, string(graphsnapshot.TaskRunning)).Inc()
+	s.observeGraphTaskQueue(ctx)
 	return task, true, nil
+}
+
+func (s *Store) observeGraphTaskQueue(ctx context.Context) {
+	var queued int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM graph_tasks WHERE state='queued'`).Scan(&queued); err == nil {
+		observe.GraphTaskQueueDepth.Set(float64(queued))
+	}
 }
 
 // AddGraphTaskWarning persists one safe, canonical warning while a task is

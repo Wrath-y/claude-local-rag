@@ -162,8 +162,19 @@ var (
 		prometheus.CounterOpts{Name: "rag_graph_task_transitions_total", Help: "Durable graph task transitions by operation and state"},
 		[]string{"operation", "state"},
 	)
+	GraphTaskQueueDepth = prometheus.NewGauge(
+		prometheus.GaugeOpts{Name: "rag_graph_task_queue_depth", Help: "Current queued durable graph task count"},
+	)
+	GraphTaskDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "rag_graph_task_duration_seconds", Help: "Durable graph task duration by operation and terminal state", Buckets: prometheus.DefBuckets},
+		[]string{"operation", "state"},
+	)
 	GraphRebuildComponentOutcomes = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "rag_graph_rebuild_component_outcomes_total", Help: "Graph rebuild component outcomes"},
+		[]string{"component", "outcome"},
+	)
+	GraphRebuildComponentDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "rag_graph_rebuild_component_duration_seconds", Help: "Graph rebuild component duration by component and outcome", Buckets: prometheus.DefBuckets},
 		[]string{"component", "outcome"},
 	)
 	GraphRecoveryTotal = prometheus.NewCounter(
@@ -201,7 +212,10 @@ func InitMetrics() {
 		FeedbackOperations,
 		GraphHealthState,
 		GraphTaskTransitions,
+		GraphTaskQueueDepth,
+		GraphTaskDuration,
 		GraphRebuildComponentOutcomes,
+		GraphRebuildComponentDuration,
 		GraphRecoveryTotal,
 	)
 }

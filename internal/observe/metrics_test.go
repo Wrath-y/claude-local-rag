@@ -37,10 +37,13 @@ func TestGraphMetricsUseOnlyBoundedLabels(t *testing.T) {
 	InitMetrics()
 	GraphHealthState.WithLabelValues("degraded").Set(1)
 	GraphTaskTransitions.WithLabelValues("snapshot_rebuild", "running").Inc()
+	GraphTaskQueueDepth.Set(2)
+	GraphTaskDuration.WithLabelValues("snapshot_rebuild", "succeeded").Observe(0.1)
 	GraphRebuildComponentOutcomes.WithLabelValues("vector", "succeeded").Inc()
+	GraphRebuildComponentDuration.WithLabelValues("vector", "succeeded").Observe(0.1)
 	GraphRecoveryTotal.Inc()
 	output := string(Render())
-	for _, want := range []string{"rag_graph_health_state", "rag_graph_task_transitions_total", "rag_graph_rebuild_component_outcomes_total", "rag_graph_recovery_total"} {
+	for _, want := range []string{"rag_graph_health_state", "rag_graph_task_transitions_total", "rag_graph_task_queue_depth", "rag_graph_task_duration_seconds", "rag_graph_rebuild_component_outcomes_total", "rag_graph_rebuild_component_duration_seconds", "rag_graph_recovery_total"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("metric %q missing from %s", want, output)
 		}

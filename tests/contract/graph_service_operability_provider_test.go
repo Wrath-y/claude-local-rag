@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +17,7 @@ import (
 	"github.com/Wrath-y/local-rag/internal/handler"
 	"github.com/Wrath-y/local-rag/internal/operability"
 	"github.com/Wrath-y/local-rag/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
@@ -59,6 +62,7 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 	if err = json.Unmarshal(health.Body.Bytes(), &healthBody); err != nil || healthBody.SchemaVersion != "1.0" || len(healthBody.APIVersions) != 1 || healthBody.APIVersions[0] != "v1" {
 		t.Fatalf("health=%s err=%v", health.Body.String(), err)
 	}
+	validateOpenAPIResponse(t, "Health", health.Body.Bytes())
 
 	rebuild := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["vector","fts","graph_indexes"]}`))
@@ -76,6 +80,7 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 	if err = json.Unmarshal(rebuild.Body.Bytes(), &submission); err != nil || submission.TaskID != "task-rebuild-1" || submission.State != "queued" || len(submission.Components) != 3 || submission.Components[0] != "graph_indexes" || submission.Components[2] != "vector" {
 		t.Fatalf("submission=%+v err=%v", submission, err)
 	}
+	validateOpenAPIResponse(t, "RebuildSubmission", rebuild.Body.Bytes())
 	replay := httptest.NewRecorder()
 	replayRequest := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["graph_indexes","fts","vector"]}`))
 	replayRequest.Header.Set("Idempotency-Key", "fixture-key")
@@ -95,5 +100,36 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 	router.ServeHTTP(poll, httptest.NewRequest(http.MethodGet, "/v1/tasks/task-rebuild-1", nil))
 	if poll.Code != http.StatusOK || !bytes.Contains(poll.Body.Bytes(), []byte(`"submission_request_id":"fixture-request"`)) {
 		t.Fatalf("poll=%d %s", poll.Code, poll.Body.String())
+	}
+	validateOpenAPIResponse(t, "Task", poll.Body.Bytes())
+}
+
+// validateOpenAPIResponse keeps contract replay tied to the published schema.
+// The full OpenAPI validator is intentionally unnecessary here: this checks
+// every required response member from the source-of-truth document while the
+// handlers' typed DTO tests cover nested field encoding.
+func validateOpenAPIResponse(t *testing.T, schemaName string, body []byte) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "api", "openapi.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err = yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
+	schema, ok := schemas[schemaName].(map[string]any)
+	if !ok {
+		t.Fatalf("OpenAPI schema %s missing", schemaName)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(body, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range schema["required"].([]any) {
+		if _, ok := value[required.(string)]; !ok {
+			t.Fatalf("%s response misses required OpenAPI field %q: %s", schemaName, required, body)
+		}
 	}
 }

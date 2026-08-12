@@ -177,6 +177,27 @@ func TestSnapshotAcceptanceKeepsBasesImmutableAndDeltaEquivalentToFull(t *testin
 	}
 }
 
+func TestGraphSnapshotSubmissionRequestIDPersistsOnDurableTask(t *testing.T) {
+	s, err := New(t.TempDir()+"/rag.db", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	node := graphsnapshot.Node{ID: "node", Type: "kind", Label: "label", Text: "text", Properties: []byte(`{}`), Provenance: []byte(`{}`)}
+	_, hash, err := graphsnapshot.CanonicalHash([]graphsnapshot.Node{node}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := graphsnapshot.NewService(s, func() (string, error) { return "correlated-task", nil })
+	if _, graphErr := service.PutWithRequestID(context.Background(), "project", "v1", "request-submit-1", graphsnapshot.Request{SchemaVersion: graphsnapshot.SchemaVersionV1, Mode: graphsnapshot.ModeFull, ContentHash: hash, Nodes: []graphsnapshot.Node{node}}); graphErr != nil {
+		t.Fatal(graphErr)
+	}
+	task, found, err := s.LookupGraphTask(context.Background(), "correlated-task")
+	if err != nil || !found || task.SubmissionRequestID != "request-submit-1" {
+		t.Fatalf("task=%+v found=%v err=%v", task, found, err)
+	}
+}
+
 func seedGraphSnapshot(t *testing.T, s *Store, namespace, version, marker string) {
 	t.Helper()
 	const timestamp = "2026-08-10T00:00:00Z"

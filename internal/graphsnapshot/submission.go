@@ -34,12 +34,13 @@ type SnapshotAccepter interface {
 // AcceptedSnapshot is fully normalized and hash-verified before it reaches
 // the storage transaction.
 type AcceptedSnapshot struct {
-	Namespace   string
-	Version     string
-	BaseVersion string
-	ContentHash string
-	Manifest    Manifest
-	TaskID      string
+	Namespace           string
+	Version             string
+	BaseVersion         string
+	ContentHash         string
+	Manifest            Manifest
+	TaskID              string
+	SubmissionRequestID string
 }
 
 // Service coordinates request validation and durable acceptance. Worker
@@ -90,6 +91,16 @@ func CheckExistingSubmission(ctx context.Context, repository ExistingSnapshotRea
 // durable acceptance transaction. A missing/invalid base and a hash mismatch
 // exit before the repository is asked to create a namespace or task.
 func (s *Service) Put(ctx context.Context, namespace, version string, request Request) (SubmissionCheck, *Error) {
+	return s.put(ctx, namespace, version, request, "")
+}
+
+// PutWithRequestID persists the causal /v1 request ID with the accepted task
+// while retaining Put for transport-neutral callers and existing adapters.
+func (s *Service) PutWithRequestID(ctx context.Context, namespace, version, requestID string, request Request) (SubmissionCheck, *Error) {
+	return s.put(ctx, namespace, version, request, requestID)
+}
+
+func (s *Service) put(ctx context.Context, namespace, version string, request Request, requestID string) (SubmissionCheck, *Error) {
 	if existing, graphErr := CheckExistingSubmission(ctx, s.repository, namespace, version, request.ContentHash); graphErr != nil || existing.Existing {
 		return existing, graphErr
 	}
@@ -108,7 +119,7 @@ func (s *Service) Put(ctx context.Context, namespace, version string, request Re
 	if err != nil {
 		return SubmissionCheck{}, NewError(CodeInternalError, nil, err)
 	}
-	snapshot, err := s.repository.AcceptGraphSnapshot(ctx, AcceptedSnapshot{Namespace: namespace, Version: version, BaseVersion: baseVersion, ContentHash: actualHash, Manifest: manifest, TaskID: taskID})
+	snapshot, err := s.repository.AcceptGraphSnapshot(ctx, AcceptedSnapshot{Namespace: namespace, Version: version, BaseVersion: baseVersion, ContentHash: actualHash, Manifest: manifest, TaskID: taskID, SubmissionRequestID: requestID})
 	if err != nil {
 		if errors.Is(err, ErrSnapshotAlreadyAccepted) {
 			return CheckExistingSubmission(ctx, s.repository, namespace, version, request.ContentHash)

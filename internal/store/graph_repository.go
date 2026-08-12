@@ -248,13 +248,20 @@ func (s *Store) AcceptGraphSnapshot(ctx context.Context, accepted graphsnapshot.
 	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_snapshot_staging(namespace,version,manifest_json) VALUES(?,?,?)`, accepted.Namespace, accepted.Version, string(canonical)); err != nil {
 		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph staging: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_tasks(id,namespace,version,state,phase,progress,created_at) VALUES(?,?,?,'queued','queued',0,?)`, accepted.TaskID, accepted.Namespace, accepted.Version, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO graph_tasks(id,namespace,version,submission_request_id,state,phase,progress,created_at) VALUES(?,?,?,?,'queued','queued',0,?)`, accepted.TaskID, accepted.Namespace, accepted.Version, nullableGraphRequestID(accepted.SubmissionRequestID), now); err != nil {
 		return graphsnapshot.Snapshot{}, fmt.Errorf("create graph task: %w", err)
 	}
 	if err = tx.Commit(); err != nil {
 		return graphsnapshot.Snapshot{}, fmt.Errorf("commit graph acceptance: %w", err)
 	}
 	return graphsnapshot.Snapshot{Namespace: accepted.Namespace, Version: accepted.Version, BaseVersion: stringPointer(accepted.BaseVersion), SchemaVersion: graphsnapshot.SchemaVersionV1, ContentHash: accepted.ContentHash, NodeCount: len(accepted.Manifest.Nodes), EdgeCount: len(accepted.Manifest.Edges), TaskID: accepted.TaskID, Status: graphsnapshot.SnapshotBuilding, Components: []graphsnapshot.Component{{Name: graphsnapshot.ComponentGraph, State: graphsnapshot.ComponentPending}, {Name: graphsnapshot.ComponentFTS, State: graphsnapshot.ComponentPending}, {Name: graphsnapshot.ComponentVector, State: graphsnapshot.ComponentPending}}}, nil
+}
+
+func nullableGraphRequestID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func stringPointer(value string) *string {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -29,8 +30,16 @@ func (s *Store) FailRequiredGraphComponent(ctx context.Context, taskID string, c
 	}
 	defer tx.Rollback()
 	var namespace, version string
-	if err = tx.QueryRowContext(ctx, `SELECT namespace,version FROM graph_tasks WHERE id=?`, taskID).Scan(&namespace, &version); err != nil {
+	var requestID sql.NullString
+	if err = tx.QueryRowContext(ctx, `SELECT namespace,version,submission_request_id FROM graph_tasks WHERE id=?`, taskID).Scan(&namespace, &version, &requestID); err != nil {
 		return err
+	}
+	if requestID.Valid {
+		graphErr.WithRequestID(requestID.String)
+		errorJSON, err = json.Marshal(graphErr)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE graph_snapshot_components SET state='failed',error_json=? WHERE namespace=? AND version=? AND component=?`, string(errorJSON), namespace, version, component); err != nil {
 		return err

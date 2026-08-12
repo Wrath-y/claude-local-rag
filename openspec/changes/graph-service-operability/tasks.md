@@ -53,7 +53,7 @@
 
 ## 7. Request Correlation, Metrics, Logs, and Local Runbook
 
-- [ ] 7.1 Audit snapshot/activation/deletion/traverse/paths/retrieve/rebuild/task handlers to use the one shared `/v1` request-ID middleware and error writer, propagate `X-Request-ID`, persist the causal submission request ID on tasks, and test valid/missing/invalid IDs plus background failures.
+- [x] 7.1 Audit snapshot/activation/deletion/traverse/paths/retrieve/rebuild/task handlers to use the one shared `/v1` request-ID middleware and error writer, propagate `X-Request-ID`, persist the causal submission request ID on tasks, and test valid/missing/invalid IDs plus background failures.
 - [x] 7.2 Add graph health-state, task queue/transition/duration, rebuild component outcome/duration, and recovery Prometheus collectors in `internal/observe`, with only bounded enum labels and registry tests that reject namespaces, versions, generations, task/request IDs, graph/query text, and fixture secrets.
 - [ ] 7.3 Add safe structured events for health transitions, task accept/claim/requeue/phase/terminal state, rebuild validation/promotion, and stable errors; test correlation fields and prove logs omit bodies, graph properties/text, embeddings, provider payloads, credentials, raw SQL, and filesystem paths.
 - [x] 7.4 Add a local graph operations runbook under `docs/` covering health compatibility and 200/503 interpretation, dependency/capability states, task polling, explicit idempotent rebuild, evicted generations, `REIMPORT_REQUIRED`, metrics, logs, clean shutdown/restart recovery, and rollback without documenting a remote control plane.

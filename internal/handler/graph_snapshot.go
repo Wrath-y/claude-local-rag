@@ -25,6 +25,10 @@ type GraphSnapshotService interface {
 	Put(context.Context, string, string, graphsnapshot.Request) (graphsnapshot.SubmissionCheck, *graphsnapshot.Error)
 }
 
+type graphSnapshotRequestCorrelator interface {
+	PutWithRequestID(context.Context, string, string, string, graphsnapshot.Request) (graphsnapshot.SubmissionCheck, *graphsnapshot.Error)
+}
+
 // GraphTaskReader is the read-side dependency for durable task inspection.
 type GraphTaskReader interface {
 	LookupGraphTask(context.Context, string) (graphsnapshot.Task, bool, error)
@@ -66,7 +70,13 @@ func (h *Handler) PutGraphSnapshot(c *gin.Context) {
 		return
 	}
 
-	result, graphErr := h.graphService.Put(c.Request.Context(), namespace, version, request)
+	var result graphsnapshot.SubmissionCheck
+	var graphErr *graphsnapshot.Error
+	if correlated, ok := h.graphService.(graphSnapshotRequestCorrelator); ok {
+		result, graphErr = correlated.PutWithRequestID(c.Request.Context(), namespace, version, GraphRequestIDFromContext(c.Request.Context()), request)
+	} else {
+		result, graphErr = h.graphService.Put(c.Request.Context(), namespace, version, request)
+	}
 	if graphErr != nil {
 		writeGraphError(c, graphErr)
 		return

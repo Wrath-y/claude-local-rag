@@ -1,6 +1,14 @@
 package observe
 
-import "log/slog"
+import (
+	"log/slog"
+	"sync"
+)
+
+var graphHealthTransition struct {
+	sync.Mutex
+	state string
+}
 
 // GraphEvent emits a deliberately small operational record. Callers provide
 // only bounded event/code/component values and safe correlation IDs; request
@@ -28,4 +36,17 @@ func LogGraphEvent(logger *slog.Logger, event, operation, component, taskID, req
 		attrs = append(attrs, "code", code)
 	}
 	logger.Info("graph operation", attrs...)
+}
+
+// GraphHealthTransition emits only when the aggregate health state changes,
+// avoiding log spam from ordinary polling.
+func GraphHealthTransition(state string) {
+	graphHealthTransition.Lock()
+	if graphHealthTransition.state == state {
+		graphHealthTransition.Unlock()
+		return
+	}
+	graphHealthTransition.state = state
+	graphHealthTransition.Unlock()
+	GraphEvent("health_transition", "", "", "", "", state)
 }

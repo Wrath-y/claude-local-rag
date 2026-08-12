@@ -547,6 +547,7 @@ func (s *Store) promoteGraphIndexRebuild(ctx context.Context, taskID string) err
 	}
 	observe.GraphTaskTransitions.WithLabelValues("snapshot_rebuild", string(graphsnapshot.TaskSucceeded)).Inc()
 	s.observeGraphTaskTerminal(ctx, taskID, graphsnapshot.TaskSucceeded)
+	observe.GraphEvent("rebuild_promoted", "snapshot_rebuild", "", taskID, "", "")
 	observe.GraphEvent("task_terminal", "snapshot_rebuild", "", taskID, "", "SUCCEEDED")
 	return nil
 }

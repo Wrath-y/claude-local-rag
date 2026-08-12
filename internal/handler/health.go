@@ -51,6 +51,7 @@ func (h *Handler) Health(c *gin.Context) {
 		code = http.StatusServiceUnavailable
 	}
 	observe.GraphHealthState.WithLabelValues(string(status)).Set(1)
+	observe.GraphHealthTransition(string(status))
 	c.JSON(code, document)
 }
 

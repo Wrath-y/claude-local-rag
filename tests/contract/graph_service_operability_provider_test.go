@@ -102,6 +102,34 @@ func TestOperabilityFixturesReplayAgainstGinAndGraphSQLite(t *testing.T) {
 		t.Fatalf("poll=%d %s", poll.Code, poll.Body.String())
 	}
 	validateOpenAPIResponse(t, "Task", poll.Body.Bytes())
+	claimed, found, err := s.ClaimOldestQueuedGraphTask(context.Background())
+	if err != nil || !found || claimed.ID != "task-rebuild-1" {
+		t.Fatalf("claimed=%+v found=%v err=%v", claimed, found, err)
+	}
+	if _, err = s.AdvanceGraphTaskProgress(context.Background(), claimed.ID, "building_fts", 5500); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverGraphTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered := httptest.NewRecorder()
+	router.ServeHTTP(recovered, httptest.NewRequest(http.MethodGet, "/v1/tasks/task-rebuild-1", nil))
+	if recovered.Code != http.StatusOK || !bytes.Contains(recovered.Body.Bytes(), []byte(`"state":"queued"`)) || !bytes.Contains(recovered.Body.Bytes(), []byte(`"phase":"queued"`)) || !bytes.Contains(recovered.Body.Bytes(), []byte(`"progress":0.55`)) {
+		t.Fatalf("recovered=%d %s", recovered.Code, recovered.Body.String())
+	}
+	validateOpenAPIResponse(t, "Task", recovered.Body.Bytes())
+	if _, err = s.DB().Exec(`DELETE FROM graph_nodes WHERE namespace='project' AND version='v1' AND node_id='node'`); err != nil {
+		t.Fatal(err)
+	}
+	reimport := httptest.NewRecorder()
+	reimportRequest := httptest.NewRequest(http.MethodPost, "/v1/graphs/project/snapshots/v1/rebuild", bytes.NewBufferString(`{"components":["fts"]}`))
+	reimportRequest.Header.Set("Idempotency-Key", "reimport-key")
+	reimportRequest.Header.Set("X-Request-ID", "request-reimport")
+	router.ServeHTTP(reimport, reimportRequest)
+	if reimport.Code != http.StatusConflict || !bytes.Contains(reimport.Body.Bytes(), []byte(`"code":"REIMPORT_REQUIRED"`)) || !bytes.Contains(reimport.Body.Bytes(), []byte(`"request_id":"request-reimport"`)) {
+		t.Fatalf("reimport=%d %s", reimport.Code, reimport.Body.String())
+	}
+	validateOpenAPIResponse(t, "GraphError", reimport.Body.Bytes())
 }
 
 // validateOpenAPIResponse keeps contract replay tied to the published schema.

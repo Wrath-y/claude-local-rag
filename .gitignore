@@ -5,6 +5,11 @@
 .claude/commands/*
 !.claude/commands/rag*.md
 .idea
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/local-rag/
+!.agents/skills/local-rag/SKILL.md
 .codex/*
 !.codex/
 !.codex/config.toml
@@ -12,10 +17,6 @@
 !.codex/hooks/
 .codex/hooks/*
 !.codex/hooks/rag-user-prompt-submit.sh
-!.codex/skills/
-.codex/skills/*
-!.codex/skills/local-rag/
-!.codex/skills/local-rag/SKILL.md
 MEMORY.md
 
 # 向量库数据（本地生成，不上传）

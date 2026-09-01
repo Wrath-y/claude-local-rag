@@ -42,6 +42,7 @@ venv/
 # 日志
 logs/
 *.log
+.runtime
 
 # macOS
 .DS_Store
@@ -58,6 +59,7 @@ openspec
 # Go build artifacts
 rag-server
 .rag-server.pid
+rag-server.exe
 artifacts/
 data/
 backups/

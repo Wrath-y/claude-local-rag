@@ -14,7 +14,7 @@ if %errorlevel% neq 0 (
 if not exist rag-server.exe (
     echo Building rag-server...
     go build -o rag-server.exe ./cmd/server/
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo Error: Build failed.
         exit /b 1
     )
@@ -28,19 +28,54 @@ if "!MOD_TIME!" gtr "!BIN_TIME!" (
     go build -o rag-server.exe ./cmd/server/
 )
 
-:: Setup Python sidecar if local provider
-findstr /c:"provider: \"local\"" config.yaml >nul 2>&1
-if %errorlevel% equ 0 (
+:: Resolve only embedding.provider; an omitted value matches the Go default.
+set "PROVIDER=local"
+set "IN_EMBEDDING=0"
+if exist config.yaml (
+    for /f "usebackq tokens=1,* delims=:" %%A in ("config.yaml") do (
+        set "RAW_KEY=%%A"
+        set "RAW_VALUE=%%B"
+        if /i "!RAW_KEY!"=="embedding" (
+            set "IN_EMBEDDING=1"
+        ) else if "!IN_EMBEDDING!"=="1" (
+            if not "!RAW_KEY:~0,1!"==" " (
+                set "IN_EMBEDDING=0"
+            ) else (
+                set "KEY="
+                for /f "tokens=* delims= " %%K in ("!RAW_KEY!") do set "KEY=%%K"
+                if /i "!KEY!"=="provider" (
+                    for /f "tokens=* delims= " %%V in ("!RAW_VALUE!") do set "PROVIDER=%%V"
+                    set "PROVIDER=!PROVIDER:"=!"
+                    for /f "tokens=1 delims= #" %%V in ("!PROVIDER!") do set "PROVIDER=%%V"
+                )
+            )
+        )
+    )
+)
+
+:: Setup Python sidecar if local provider.
+set "VENV_SCRIPTS="
+if /i "!PROVIDER!"=="local" (
+    set "PYTHON_BOOTSTRAP="
     where python >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo Error: Python required for local embedding.
+    if !errorlevel! equ 0 (
+        set "PYTHON_BOOTSTRAP=python"
+    ) else (
+        where py >nul 2>&1
+        if !errorlevel! equ 0 set "PYTHON_BOOTSTRAP=py -3"
+    )
+    if not defined PYTHON_BOOTSTRAP (
+        echo Error: Python 3 required for local embedding.
         exit /b 1
     )
     if not exist sidecar\.venv (
         echo Setting up Python sidecar...
-        python -m venv sidecar\.venv
-        sidecar\.venv\Scripts\pip install -q -r sidecar\requirements.txt
+        !PYTHON_BOOTSTRAP! -m venv sidecar\.venv
+        if !errorlevel! neq 0 exit /b 1
+        sidecar\.venv\Scripts\python.exe -m pip install -q -r sidecar\requirements.txt
+        if !errorlevel! neq 0 exit /b 1
     )
+    set "VENV_SCRIPTS=!CD!\sidecar\.venv\Scripts"
 )
 
 :: Stop existing
@@ -50,8 +85,16 @@ if exist .rag-server.pid (
     del .rag-server.pid
 )
 
-:: Start server
-start /b "" rag-server.exe
+:: Ensure daily server logs are captured under the repository root.
+if not exist logs mkdir logs
+set "LOG_DATE="
+for /f %%D in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd"') do set "LOG_DATE=%%D"
+if not defined LOG_DATE set "LOG_DATE=current"
+set "LOG_FILE=!CD!\logs\rag-server-!LOG_DATE!.log"
+
+:: Start server with the venv first on PATH when local embedding is active.
+if defined VENV_SCRIPTS set "PATH=!VENV_SCRIPTS!;!PATH!"
+start /b "" rag-server.exe >>"!LOG_FILE!" 2>&1
 timeout /t 1 /nobreak >nul
 
 :: Get PID of rag-server.exe

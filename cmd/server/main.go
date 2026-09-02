@@ -273,7 +273,7 @@ func main() {
 	r.GET("/agent/sessions", h.AgentListSessions)
 	r.DELETE("/agent/session/:id", h.AgentDeleteSession)
 
-	server := &http.Server{Addr: fmt.Sprintf(":%d", cfg.Server.Port), Handler: r}
+	server := &http.Server{Addr: serverAddress(cfg.Server.Port), Handler: r}
 
 	// Graceful shutdown stops new HTTP admission before workers and storage.
 	go func() {
@@ -294,6 +294,8 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+func serverAddress(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
 
 // runMCP starts the server in MCP (Model Context Protocol) mode.
 // It communicates over stdin/stdout using JSON-RPC, NOT HTTP.

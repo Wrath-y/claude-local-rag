@@ -43,6 +43,19 @@ func TestManager_URLFormat(t *testing.T) {
 	}
 }
 
+func TestPythonExecutableMatchesHostConvention(t *testing.T) {
+	tests := map[string]string{
+		"windows": "python",
+		"darwin":  "python3",
+		"linux":   "python3",
+	}
+	for goos, want := range tests {
+		if got := pythonExecutable(goos); got != want {
+			t.Errorf("pythonExecutable(%q) = %q, want %q", goos, got, want)
+		}
+	}
+}
+
 func TestManager_StopIdempotent(t *testing.T) {
 	m := New(Config{Provider: "openai", Port: 8766})
 	// Stop on a never-started manager must not panic.

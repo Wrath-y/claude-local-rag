@@ -15,7 +15,13 @@ if [ ! -f rag-server ] || [ go.mod -nt rag-server ]; then
 fi
 
 # Setup Python sidecar if local provider
-PROVIDER=$(grep -A1 'embedding:' config.yaml 2>/dev/null | grep 'provider:' | awk '{print $2}' | tr -d '"' || echo "local")
+PROVIDER=$(awk '
+  /^embedding:/ { in_embedding=1; next }
+  in_embedding && /^[^[:space:]]/ { exit }
+  in_embedding && /^[[:space:]]+provider:/ { gsub(/"/, "", $2); print $2; exit }
+' config.yaml 2>/dev/null)
+PROVIDER=${PROVIDER:-local}
+VENV_BIN=""
 if [ "$PROVIDER" = "local" ]; then
     if ! command -v python3 &>/dev/null; then
         echo "Error: Python3 required for local embedding."
@@ -26,6 +32,7 @@ if [ "$PROVIDER" = "local" ]; then
         python3 -m venv sidecar/.venv
         sidecar/.venv/bin/pip install -q -r sidecar/requirements.txt
     fi
+    VENV_BIN="$SCRIPT_DIR/sidecar/.venv/bin"
 fi
 
 # Stop existing
@@ -40,7 +47,11 @@ LOG_FILE="$LOG_DIR/rag-server-$(date +%Y%m%d).log"
 mkdir -p "$LOG_DIR"
 
 # Start
-./rag-server >>"$LOG_FILE" 2>&1 &
+if [ -n "$VENV_BIN" ]; then
+    PATH="$VENV_BIN:$PATH" ./rag-server >>"$LOG_FILE" 2>&1 &
+else
+    ./rag-server >>"$LOG_FILE" 2>&1 &
+fi
 PID=$!
 echo "$PID" > .rag-server.pid
 

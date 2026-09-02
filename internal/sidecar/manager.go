@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -75,7 +76,7 @@ func (m *Manager) launch() error {
 		pythonPath = "sidecar/main.py"
 	}
 
-	cmd := exec.Command("python3", pythonPath, "--port", fmt.Sprintf("%d", m.cfg.Port))
+	cmd := exec.Command(pythonExecutable(runtime.GOOS), pythonPath, "--port", fmt.Sprintf("%d", m.cfg.Port))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -83,6 +84,13 @@ func (m *Manager) launch() error {
 	}
 	m.cmd = cmd
 	return nil
+}
+
+func pythonExecutable(goos string) string {
+	if goos == "windows" {
+		return "python"
+	}
+	return "python3"
 }
 
 // waitHealthy polls /health until it returns 200 or the timeout elapses.

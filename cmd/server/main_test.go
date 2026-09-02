@@ -12,6 +12,12 @@ func TestMainCompiles(t *testing.T) {
 	t.Log("main package compiles successfully")
 }
 
+func TestServerAddressIsLoopbackOnly(t *testing.T) {
+	if address := serverAddress(8765); address != "127.0.0.1:8765" {
+		t.Fatalf("server address=%q", address)
+	}
+}
+
 type shutdownRecorder struct {
 	events      *[]string
 	shutdownErr error
